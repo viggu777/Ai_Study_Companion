@@ -1,0 +1,12 @@
+node_modules
+.next
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+.DS_Store
+# Build / eval outputs (generated, not for review)
+tsconfig.tsbuildinfo
+evaluation-results.json
+tests/eval/results.json
+.vercel
