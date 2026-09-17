@@ -3,6 +3,8 @@ import { getProject } from "@/services/project.service";
 import { getGrowthAnalysis } from "@/services/growth.service";
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { Alert, PageHeader } from "@/components/ui";
+import MasteryClient, { type MasteryEntry } from "./MasteryClient";
 
 export default async function MasteryPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
@@ -21,58 +23,34 @@ export default async function MasteryPage({ params }: { params: Promise<{ projec
     error = e instanceof Error ? e.message : String(e);
   }
 
+  // Weakest-first: untested (null) counts as 0 so gaps surface at the top.
+  const entries: MasteryEntry[] = [...growth]
+    .sort((a, b) => (a.currentScore ?? -1) - (b.currentScore ?? -1))
+    .map((g) => ({
+      conceptId: g.conceptId,
+      conceptName: g.conceptName,
+      description: g.description,
+      previousScore: g.previousScore,
+      currentScore: g.currentScore,
+      trend: g.trend,
+      historyCount: g.historyCount,
+    }));
+
   return (
-    <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Mastery — {project.name}</h1>
-        <p className="text-sm text-stone-600">Current mastery per concept, updated deterministically after each quiz (new = previous × 0.7 + evidence × 0.3)</p>
-      </div>
+    <div className="page-enter">
+      <PageHeader
+        title={`Mastery — ${project.name}`}
+        description="Current mastery per concept, updated deterministically after each quiz (new = previous × 0.7 + evidence × 0.3). Weakest first — click a card for details."
+      />
 
       {error ? (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
-      ) : growth.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-card border border-stone-200 p-8 text-center">
-          <p className="text-sm text-stone-500">No concepts yet — upload a PDF and complete a quiz to see mastery.</p>
-        </div>
+        <Alert>{error}</Alert>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {growth.map((g) => (
-            <div key={g.conceptId} className="bg-white rounded-lg shadow-card border border-stone-200 p-5">
-              <h3 className="font-semibold text-stone-900">{g.conceptName}</h3>
-              {g.description && <p className="mt-1 text-sm text-stone-500 line-clamp-2">{g.description}</p>}
-              <div className="mt-3 flex items-end gap-2">
-                <span className="text-3xl font-bold text-stone-900">
-                  {g.currentScore !== null ? g.currentScore.toFixed(0) : "—"}
-                </span>
-                <span className="pb-1 text-xs text-stone-400">/ 100</span>
-                <span
-                  className={`ml-auto inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                    g.trend === "IMPROVING"
-                      ? "bg-green-100 text-green-800"
-                      : g.trend === "REQUIRES_ATTENTION"
-                      ? "bg-red-100 text-red-800"
-                      : "bg-stone-100 text-stone-700"
-                  }`}
-                >
-                  {g.trend}
-                </span>
-              </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100">
-                <div
-                  className="h-full rounded-full bg-sky-600 transition-all"
-                  style={{ width: `${Math.max(0, Math.min(100, g.currentScore ?? 0))}%` }}
-                />
-              </div>
-              <p className="mt-2 text-xs text-stone-400">
-                {g.previousScore !== null ? `Previous ${g.previousScore.toFixed(1)}` : "Not yet tested"} · history: {g.historyCount} point(s)
-              </p>
-            </div>
-          ))}
-        </div>
+        <MasteryClient entries={entries} />
       )}
 
       <p className="mt-6 text-xs text-stone-400">
-        <Link href={`/projects/${projectId}/growth`} className="text-stone-800 hover:text-stone-800">View growth trends →</Link>
+        <Link href={`/projects/${projectId}/growth`} className="text-stone-800 hover:text-stone-900">View growth trends →</Link>
       </p>
     </div>
   );

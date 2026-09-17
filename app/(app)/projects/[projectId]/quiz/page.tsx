@@ -19,7 +19,7 @@ export default async function QuizPage({
         <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Quiz — {project.name}</h1>
         <p className="text-sm text-stone-600">Adaptive quiz — weaker and recently-missed concepts appear more often</p>
       </div>
-      <div className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+      <div className="w-full py-2">
         <QuizClient projectId={projectId} />
       </div>
     </div>

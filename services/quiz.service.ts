@@ -265,8 +265,14 @@ export async function selectAdaptiveConcepts(
   count: number = DEFAULT_QUIZ_SIZE
 ): Promise<SelectionCandidate[]> {
   const db = await getDb();
-  const { data: concepts } = await db.from("concepts").select("id, name, description").eq("project_id", projectId);
-  const rows = (concepts ?? []) as ConceptRow[];
+  // Prefer concepts sourced from a live material. Orphaned concepts
+  // (source_material_id NULL, e.g. from a deleted material) are excluded so a
+  // stale concept can never be quizzed — with fallback to all concepts only
+  // if a project has no sourced concepts at all (legacy data).
+  const { data: concepts } = await db.from("concepts").select("id, name, description, source_material_id").eq("project_id", projectId);
+  const allRows = (concepts ?? []) as Array<ConceptRow & { source_material_id: string | null }>;
+  const sourced = allRows.filter((c) => c.source_material_id !== null);
+  const rows: ConceptRow[] = (sourced.length > 0 ? sourced : allRows).map(({ source_material_id: _omit, ...c }) => c);
   if (rows.length === 0) throw new Error("No concepts available for quiz generation — upload and process material first");
 
   const stats = await buildConceptStats(projectId, userId, rows);

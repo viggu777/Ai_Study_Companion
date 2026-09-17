@@ -219,7 +219,7 @@ export async function deleteMaterial(materialId: string) {
   const db = await getDb();
   const { data: mat, error } = await db
     .from("materials")
-    .select("id, storage_path")
+    .select("id, project_id, storage_path")
     .eq("id", materialId)
     .eq("user_id", userId)
     .single();
@@ -227,10 +227,30 @@ export async function deleteMaterial(materialId: string) {
 
   // Remove the stored object best-effort (missing objects are fine —
   // e.g. rows whose upload never succeeded), then delete the row.
-  // Chunks cascade-delete via FK; concepts keep SET NULL source.
+  // Chunks cascade-delete via FK. Concepts sourced from this material that
+  // were never quizzed are deleted too — otherwise they linger as
+  // source_material_id=NULL orphans and pollute quiz selection,
+  // recommendations and mastery. Concepts WITH quiz references are kept
+  // (evidence history) and their source is SET NULL by FK.
   const { deletePdf } = await import("@/lib/storage/materialStorage");
   if (mat.storage_path && mat.storage_path !== "pending") {
     await deletePdf(mat.storage_path);
+  }
+  try {
+    const { data: ownConcepts } = await db.from("concepts").select("id").eq("project_id", (mat as { project_id: string }).project_id).eq("source_material_id", materialId);
+    const ownIds = ((ownConcepts ?? []) as Array<{ id: string }>).map((c) => c.id);
+    if (ownIds.length > 0) {
+      const { data: refQs } = await db.from("questions").select("concept_id").in("concept_id", ownIds);
+      const referenced = new Set(((refQs ?? []) as Array<{ concept_id: string }>).map((q) => q.concept_id));
+      const unreferenced = ownIds.filter((id) => !referenced.has(id));
+      if (unreferenced.length > 0) {
+        await db.from("concept_mastery").delete().in("concept_id", unreferenced);
+        await db.from("mastery_history").delete().in("concept_id", unreferenced);
+        await db.from("concepts").delete().in("id", unreferenced);
+      }
+    }
+  } catch (e) {
+    console.error("Concept cleanup on material delete failed (non-fatal):", e);
   }
   const { error: delErr } = await db
     .from("materials")

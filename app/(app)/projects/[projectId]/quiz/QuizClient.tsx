@@ -288,7 +288,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
     const correctCount = mcqResults.filter((r) => r.is_correct).length;
     const done = activeQuiz.quiz.status === "completed" || quizCompleted;
     return (
-      <div className="fade-enter mx-auto max-w-3xl space-y-5">
+      <div className="fade-enter w-full space-y-5">
         <button onClick={resetToList} className="text-sm text-stone-500 transition-colors hover:text-stone-900">
           ← All quizzes
         </button>
@@ -391,7 +391,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
     const isMcq = currentQuestion.type === "MCQ";
     const answeredFlags = activeQuiz.questions.map((q) => !!results[q.id]);
     return (
-      <div className="fade-enter mx-auto max-w-3xl space-y-4">
+      <div className="fade-enter w-full space-y-4">
         <div className="flex items-center justify-between">
           <button onClick={resetToList} className="text-sm text-stone-500 transition-colors hover:text-stone-900">
             ← All quizzes
@@ -564,7 +564,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
 
   // List view
   return (
-    <div className="fade-enter mx-auto max-w-3xl space-y-5">
+    <div className="fade-enter w-full space-y-5">
       <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-card sm:p-8">
         <div className="flex items-start gap-4">
           <span aria-hidden className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-sky-600 text-white">
