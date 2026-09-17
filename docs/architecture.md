@@ -69,8 +69,8 @@ Every AI feature exists to either produce evidence or act on evidence. There is 
                     │         │           │
          ┌───────────▼──┐   ┌──▼───────────▼────┐
          │  AIService     │   │ Supabase Postgres │
-         │ (Meta chat +   │   │  + pgvector        │
-         │  Groq embed)   │   │  + RLS             │
+         │ (Mercury chat + │   │  + pgvector        │
+         │  local embed)   │   │  + RLS             │
          └────────────────┘   └──────┬─────────────┘
                                      │
                               ┌──────▼─────────────┐
@@ -295,6 +295,8 @@ new_mastery = previous_mastery * 0.7 + latest_evidence_score * 0.3
 
 Every mastery change writes a `mastery_history` row, which is what powers Growth Analysis (`IMPROVING / STABLE / REQUIRES_ATTENTION`, computed by comparing the last two history points per concept).
 
+**Answer gating:** quiz GETs never leak `correct_answer`/`explanation` pre-submission — `POST /quiz` (generate) and `GET /quiz/[quizId]` return stripped questions; `GET ?answers=1` discloses them only for already-answered questions; `POST /submit` returns the evaluation plus that question's answer (the single legitimate disclosure point). The client merges it for "Expected:" feedback.
+
 ---
 
 ## 11. Security & Data Isolation [MUST]
@@ -311,6 +313,8 @@ Authentication (Supabase session)
 ```
 
 Concretely: every service function that accepts an entity id looks it up scoped by `user_id`, not just by id — `WHERE id = $1 AND user_id = $2`, never `WHERE id = $1` followed by a separate ownership check the developer might forget to call. Background jobs receive and preserve `user_id`/`project_id` in their event payload so ownership context isn't lost outside the request/response cycle.
+
+**API auth errors are 401, never 500 or redirects:** route handlers call `requireUserId()` (`lib/auth/getCurrentUser.ts`, throws `Unauthorized` instead of `redirect()`) and map auth failures via `isAuthError()` to `401 {"error":"Unauthorized"}`. Pages keep the redirecting `getCurrentUser()` for login flows. PATCH/UPDATE paths (e.g. recommendation status) scope writes by `user_id` in both the fetch and the update.
 
 ---
 
@@ -349,6 +353,10 @@ Repeated Mistake:     Pattern Detected → Update Learning Context
 ```
 
 **Idempotency [MUST, lightweight]:** each job/event carries an id; handlers check a `processed` flag / unique constraint before applying side effects (e.g. `learning_events` has a unique constraint on `(entity_type, entity_id, event_type)` where duplication would be harmful, such as `QUIZ_COMPLETED`). This is enough for prototype scale — do not build a general-purpose idempotency framework.
+
+Implemented: per-question answer idempotency (`submitAnswer` returns the existing answer on re-POST, including the concurrent-insert race); quiz-generation guard (a quiz created <2 min ago with zero answers is returned instead of generating again); material upload deletes stale chunks before insert.
+
+**Rate limits [lightweight]:** in-memory fixed-window per user in `lib/security/rate-limit.ts` — tutor `20/min`, quiz-generate `5/min`, quiz-submit `60/min`, else `429 + Retry-After`. Single-instance guard against AI cost spikes, not a security boundary (multi-instance deploys track counters per instance).
 
 ---
 

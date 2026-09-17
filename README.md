@@ -40,10 +40,15 @@ the closed learning loop in `docs/architecture.md`.
    | `META_API_BASE_URL` | Optional, defaults to `https://api.llama.com/compat/v1` |
     | `GROQ_API_KEY` | Only for `EMBEDDING_PROVIDER=groq` fallback (768 dims, needs column re-migration). Default embeddings are local: `BAAI/bge-small-en-v1.5` (384 dims) via Docker — see `embeddings/README.md`. `chunks.embedding` is `VECTOR(384)` per `db/schema/004_embeddings_384.sql`. |
    | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Inngest background jobs (material processing, mastery, recommendations) |
+   | `EMBEDDING_PROVIDER` | `local` (default, `BAAI/bge-small-en-v1.5` 384 dims via `embeddings/` Docker) or `groq` fallback |
+   | `EMBEDDING_API_BASE_URL` | Optional, defaults to `http://localhost:8000/v1` |
+   | `EMBEDDING_MODEL` | Optional, defaults to `BAAI/bge-small-en-v1.5` |
+   | `INNGEST_DEV` | Set `=1` for local dev so missing Inngest keys fall back to direct processing instead of timing out |
    | `ADMIN_EMAILS`, `ADMIN_USER_IDS` | Prototype admin allow-list for `/admin/*` (comma-separated) |
 
 3. Run the database migrations (`db/schema/README.md`): apply
-   `db/schema/001_initial_schema.sql` then `db/schema/002_retrieve.sql` via the
+   `db/schema/001_initial_schema.sql`, then `002_retrieve.sql`,
+   then `003_storage.sql`, then `004_embeddings_384.sql` in order via the
    Supabase SQL Editor, ensuring the `materials` Storage bucket exists (private).
 
 4. Run the development server:
@@ -59,7 +64,7 @@ the closed learning loop in `docs/architecture.md`.
 ## How to run tests
 
 ```bash
-npm test        # vitest — 46 unit/integration tests (mastery formula, ownership, tutor insufficient-evidence path)
+npm test        # vitest — 57 unit/integration tests (mastery formula, ownership, tutor insufficient-evidence path, quiz answer-gating, rate-limit windows, 401 mapping)
 npm run eval    # tsx tests/eval/run-eval.ts — 18 evaluation fixtures, writes tests/eval/results.json + evaluation-results.json
 npm run build   # production Next.js build (must compile clean)
 npm run lint    # ESLint (must report no warnings)

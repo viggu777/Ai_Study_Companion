@@ -130,7 +130,10 @@ export default function MaterialsClient({
     }
   }
 
-  async function handleDelete(materialId: string) {
+  async function handleDelete(materialId: string, status: Material["status"]) {
+    if (status === "READY" && !window.confirm("Delete this material and its chunks? Concepts already extracted stay as-is.")) {
+      return;
+    }
     setDeletingId(materialId);
     setError("");
     try {
@@ -209,26 +212,25 @@ export default function MaterialsClient({
                     <td className="tnum hidden px-4 py-3 text-stone-600 sm:table-cell">{m.page_count ?? "—"}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-stone-500 md:table-cell">{formatDateTime(m.created_at)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-right">
-                      {m.status === "FAILED" && (
-                        <>
-                          <button
-                            onClick={() => handleRetry(m.id)}
-                            disabled={retryingId === m.id || deletingId === m.id}
-                            className="mr-3 inline-flex items-center gap-1.5 text-sm font-medium text-stone-800 hover:text-stone-900 disabled:opacity-50"
-                          >
-                            {retryingId === m.id && <Spinner />}
-                            {retryingId === m.id ? "Retrying…" : "Retry"}
-                          </button>
-                          <button
-                            onClick={() => handleDelete(m.id)}
-                            disabled={deletingId === m.id || retryingId === m.id}
-                            title="Remove this failed upload (its file was never stored, so retry cannot work)"
-                            className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
-                          >
-                            {deletingId === m.id ? "Deleting…" : "Delete"}
-                          </button>
-                        </>
+                      {m.status !== "READY" && (
+                        <button
+                          onClick={() => handleRetry(m.id)}
+                          disabled={retryingId === m.id || deletingId === m.id}
+                          title={m.status === "FAILED" ? "Re-run the processing pipeline" : "Re-trigger processing (stuck items return to QUEUED)"}
+                          className="mr-3 inline-flex items-center gap-1.5 text-sm font-medium text-stone-800 hover:text-stone-900 disabled:opacity-50"
+                        >
+                          {retryingId === m.id && <Spinner />}
+                          {retryingId === m.id ? "Retrying…" : "Retry"}
+                        </button>
                       )}
+                      <button
+                        onClick={() => handleDelete(m.id, m.status)}
+                        disabled={deletingId === m.id || retryingId === m.id}
+                        title={m.status === "FAILED" ? "Remove this failed upload" : "Delete material and its chunks"}
+                        className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+                      >
+                        {deletingId === m.id ? "Deleting…" : "Delete"}
+                      </button>
                     </td>
                   </tr>
                 ))}

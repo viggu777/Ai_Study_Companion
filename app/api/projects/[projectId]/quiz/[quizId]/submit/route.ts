@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
+import { checkRateLimit, rateLimitedResponse } from "@/lib/security/rate-limit";
 import { submitAnswer } from "@/services/quiz.service";
 
 export async function POST(
@@ -7,8 +8,10 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string; quizId: string }> }
 ) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const { projectId, quizId } = await params;
+    const rl = checkRateLimit(`quiz-submit:${userId}`, 60, 60_000);
+    if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
     const body = await request.json().catch(() => ({}));
     const questionId = (body.questionId as string) ?? (body.question_id as string) ?? (body.question_id as string);
     const response = (body.response as string) ?? (body.answer as string) ?? "";

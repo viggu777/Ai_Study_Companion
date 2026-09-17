@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
+import { checkRateLimit, rateLimitedResponse } from "@/lib/security/rate-limit";
 import { generateQuiz, listQuizzes } from "@/services/quiz.service";
 
 export async function GET(
@@ -24,10 +25,14 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
     const count = typeof body.count === "number" ? body.count : undefined;
+    // Quiz generation costs an LLM call — 5/min per user (double-clicks are
+    // also absorbed by the idempotency guard in generateQuiz).
+    const rl = checkRateLimit(`quiz-generate:${userId}`, 5, 60_000);
+    if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
     const result = await generateQuiz(projectId, { count });
     return NextResponse.json(result, { status: 201 });
   } catch (e) {

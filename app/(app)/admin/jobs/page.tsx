@@ -1,5 +1,5 @@
 import { requireAdmin } from "@/lib/auth/admin";
-import { getServiceDb } from "@/lib/db/supabase";
+import { getAdminJobHealth } from "@/services/admin.service";
 
 export const dynamic = "force-dynamic";
 
@@ -7,30 +7,17 @@ export default async function AdminJobsPage() {
   await requireAdmin();
 
   let recentEvents: Array<{ event_type: string; created_at: string; metadata: unknown }> = [];
+  let aiFailures = 0;
+  let aiTotal = 0;
   let error: string | null = null;
   try {
-    const db = getServiceDb();
-    // Recent job-relevant learning_events + ai_operations failures as proxy for job health
-    const { data, error: qErr } = await db
-      .from("learning_events")
-      .select("event_type, created_at, metadata")
-      .in("event_type", ["MATERIAL_READY", "MATERIAL_FAILED", "MATERIAL_PROCESSING_STARTED", "MATERIAL_UPLOADED", "QUIZ_COMPLETED", "MASTERY_UPDATED", "RECOMMENDATION_GENERATED"])
-      .order("created_at", { ascending: false })
-      .limit(50);
-    if (qErr) throw new Error(qErr.message);
-    recentEvents = (data ?? []) as typeof recentEvents;
+    const health = await getAdminJobHealth();
+    recentEvents = health.recentEvents;
+    aiTotal = health.aiTotal;
+    aiFailures = health.aiFailures;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
-
-  let aiFailures = 0;
-  let aiTotal = 0;
-  try {
-    const db = getServiceDb();
-    const { data } = await db.from("ai_operations").select("success").order("created_at", { ascending: false }).limit(200);
-    aiTotal = (data ?? []).length;
-    aiFailures = ((data ?? []) as Array<{ success: boolean }>).filter((r) => !r.success).length;
-  } catch {}
 
   const inngestDashboardUrl = "https://app.inngest.com";
 

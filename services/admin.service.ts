@@ -413,3 +413,40 @@ export async function getAdminAiUsage(): Promise<AdminAiUsage> {
     recentFailures,
   };
 }
+
+export interface AdminJobHealth {
+  recentEvents: Array<{ event_type: string; created_at: string; metadata: unknown }>;
+  aiTotal: number;
+  aiFailures: number;
+}
+
+/**
+ * Job health proxy: recent job-tied learning_events + ai_operations failure tallies.
+ * Caller must have passed requireAdmin(); uses service role.
+ */
+export async function getAdminJobHealth(): Promise<AdminJobHealth> {
+  const db = getServiceDb();
+  const { data, error } = await db
+    .from("learning_events")
+    .select("event_type, created_at, metadata")
+    .in("event_type", ["MATERIAL_READY", "MATERIAL_FAILED", "MATERIAL_PROCESSING_STARTED", "MATERIAL_UPLOADED", "QUIZ_COMPLETED", "MASTERY_UPDATED", "RECOMMENDATION_GENERATED"])
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw new Error(error.message);
+
+  let aiTotal = 0;
+  let aiFailures = 0;
+  try {
+    const { data: ops } = await db.from("ai_operations").select("success").order("created_at", { ascending: false }).limit(200);
+    aiTotal = (ops ?? []).length;
+    aiFailures = ((ops ?? []) as Array<{ success: boolean }>).filter((r) => !r.success).length;
+  } catch {
+    // best-effort tally; events table above is the primary signal
+  }
+
+  return {
+    recentEvents: (data ?? []) as AdminJobHealth["recentEvents"],
+    aiTotal,
+    aiFailures,
+  };
+}

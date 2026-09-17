@@ -357,3 +357,28 @@ export async function updateRecommendationStatus(recommendationId: string, statu
     if (evtErr) console.error("Failed to emit RECOMMENDATION_COMPLETED:", evtErr);
   }
 }
+
+/**
+ * ACTIVE recommendations for the project hub dashboard card.
+ * Ownership-checked (project must belong to caller) and scoped by user_id.
+ */
+export async function listActiveRecommendations(
+  projectId: string,
+  limit = 3
+): Promise<Array<{ id: string; title: string; action_items: string[]; status: string; created_at: string }>> {
+  const { getCurrentUserId } = await import("@/lib/auth/getCurrentUser");
+  const userId = await getCurrentUserId();
+  const db = await getDb();
+  const owned = await db.from("projects").select("id").eq("id", projectId).eq("user_id", userId).single();
+  if (!owned.data) throw new Error("Project not found");
+  const { data, error } = await db
+    .from("recommendations")
+    .select("id, title, action_items, status, created_at")
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .eq("status", "ACTIVE")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as Array<{ id: string; title: string; action_items: string[]; status: string; created_at: string }>;
+}

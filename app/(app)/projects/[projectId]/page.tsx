@@ -1,6 +1,6 @@
 import { getCurrentUser } from "@/lib/auth/getCurrentUser";
 import { getProject } from "@/services/project.service";
-import { getDb } from "@/lib/db/supabase";
+import { listActiveRecommendations } from "@/services/recommendation.service";
 import { notFound } from "next/navigation";
 import { ArrowRightIcon, BookIcon, ChartIcon, ChatIcon, QuizIcon, SparkIcon, TargetIcon, TrendUpIcon } from "@/components/icons";
 import { Card, PageHeader } from "@/components/ui";
@@ -24,21 +24,7 @@ export default async function ProjectPage({
   await getCurrentUser();
   // Independent queries — start together so DB round-trips overlap.
   const projectPromise = getProject(projectId);
-  const recsPromise = (async () => {
-    try {
-      const db = await getDb();
-      const { data } = await db
-        .from("recommendations")
-        .select("id, title, action_items, status, created_at")
-        .eq("project_id", projectId)
-        .eq("status", "ACTIVE")
-        .order("created_at", { ascending: false })
-        .limit(3);
-      return (data ?? []) as Array<{ id: string; title: string; action_items: string[]; status: string; created_at: string }>;
-    } catch {
-      return [];
-    }
-  })();
+  const recsPromise = listActiveRecommendations(projectId, 3).catch(() => []);
   const project = await projectPromise;
   if (!project) notFound();
 

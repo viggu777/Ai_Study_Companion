@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
+import { checkRateLimit, rateLimitedResponse } from "@/lib/security/rate-limit";
 import { askTutor, getTutorHistory } from "@/services/tutor.service";
 
 export async function GET(
@@ -24,11 +25,13 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
-    await requireUserId();
+    const userId = await requireUserId();
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
     const question = (body.question as string) ?? (body.q as string) ?? "";
     if (!question.trim()) return NextResponse.json({ error: "Question is required" }, { status: 400 });
+    const rl = checkRateLimit(`tutor:${userId}`, 20, 60_000);
+    if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
     const result = await askTutor(projectId, question);
     return NextResponse.json(result);
   } catch (e) {

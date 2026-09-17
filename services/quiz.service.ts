@@ -299,7 +299,7 @@ export async function selectAdaptiveConcepts(
 export async function generateQuiz(
   projectId: string,
   options?: { count?: number }
-): Promise<{ quiz: { id: string; project_id: string; status: string; created_at: string }; questions: Array<{ id: string; concept_id: string; type: string; difficulty: string; question: string; options: unknown; correct_answer: string | null; explanation: string | null }> }> {
+): Promise<{ quiz: { id: string; project_id: string; status: string; created_at: string }; questions: Array<{ id: string; concept_id: string; type: string; difficulty: string; question: string; options: unknown; answered: boolean }> }> {
   const userId = await getCurrentUserId();
   const db = await getDb();
 
@@ -316,6 +316,41 @@ export async function generateQuiz(
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
 
   const count = Math.max(1, Math.min(options?.count ?? DEFAULT_QUIZ_SIZE, 10));
+
+  // Idempotency guard against double-click / retry storms: if the user already
+  // has a quiz created in the last 2 minutes with zero answers, return it
+  // instead of spending another LLM generation.
+  try {
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const { data: recent } = await db
+      .from("quizzes")
+      .select("id, project_id, status, created_at")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .gte("created_at", twoMinAgo)
+      .order("created_at", { ascending: false })
+      .limit(3);
+    for (const rq of (recent ?? []) as Array<{ id: string; project_id: string; status: string; created_at: string }>) {
+      // Count answers for this quiz's questions (join-free, RLS-safe via user_id)
+      const { data: qIds } = await db.from("questions").select("id").eq("quiz_id", rq.id);
+      const ids = ((qIds ?? []) as Array<{ id: string }>).map((q) => q.id);
+      let answered = 0;
+      if (ids.length > 0) {
+        const { count } = await db.from("answers").select("id", { count: "exact", head: true }).eq("user_id", userId).in("question_id", ids);
+        answered = count ?? 0;
+      }
+      if (answered === 0) {
+        const { data: qs } = await db.from("questions").select("id, concept_id, type, difficulty, question, options").eq("quiz_id", rq.id).order("id", { ascending: true });
+        return {
+          quiz: rq,
+          questions: (((qs ?? []) as Array<Record<string, unknown>>) || []).map(stripQuestionForTaking),
+        };
+      }
+    }
+  } catch {
+    // Guard is best-effort; fall through to normal generation on any error.
+  }
+
   const selected = await selectAdaptiveConcepts(projectId, userId, count);
 
   // Build prompt and call AIService
@@ -515,17 +550,62 @@ export async function generateQuiz(
 
   return {
     quiz: quiz as { id: string; project_id: string; status: string; created_at: string },
-    questions: (insertedQuestions ?? []) as Array<{
+    // Never expose correct_answer/explanation on creation — the client fetches
+    // the quiz for taking via getQuizWithQuestions (stripped) and learns the
+    // answer only per-question after submitting (submitAnswer).
+    // NOTE: insertedQuestions come from insert().select() so they DO contain
+    // correct_answer — stripQuestionForTaking removes them explicitly.
+    questions: ((insertedQuestions ?? []) as Array<{
       id: string;
       concept_id: string;
       type: string;
       difficulty: string;
       question: string;
       options: unknown;
-      correct_answer: string | null;
-      explanation: string | null;
-    }>,
+      correct_answer?: string | null;
+      explanation?: string | null;
+    }>).map(stripQuestionForTaking),
   };
+}
+
+/**
+ * Pure answer-gating helpers (unit-tested in tests/unit/quiz-gating.test.ts).
+ * Quiz GETs must never leak correct_answer/explanation pre-submission.
+ */
+export interface TakingQuestion {
+  id: string;
+  concept_id: string;
+  type: string;
+  difficulty: string;
+  question: string;
+  options: unknown;
+  concept_name?: string;
+  answered: boolean;
+  correct_answer?: string | null;
+  explanation?: string | null;
+}
+
+/** Remove answer fields entirely — for taking (generate + plain GET). */
+export function stripQuestionForTaking(q: Record<string, unknown>): TakingQuestion {
+  const { correct_answer: _ca, explanation: _ex, ...rest } = q;
+  void _ca;
+  void _ex;
+  return { ...(rest as Omit<TakingQuestion, "answered">), answered: false };
+}
+
+/**
+ * Post-hoc review gating — for GET ?answers=1. Answered questions keep their
+ * answer fields; unanswered ones are nulled (never leaked).
+ */
+export function gateQuestionForReview(
+  q: Record<string, unknown> & { correct_answer?: string | null; explanation?: string | null },
+  answered: boolean
+): TakingQuestion {
+  if (answered) return { ...(q as Omit<TakingQuestion, "answered">), answered: true };
+  const { correct_answer: _ca, explanation: _ex, ...rest } = q;
+  void _ca;
+  void _ex;
+  return { ...(rest as Omit<TakingQuestion, "answered">), answered: false, correct_answer: null, explanation: null };
 }
 
 export async function listQuizzes(projectId: string) {
@@ -557,9 +637,12 @@ export async function getQuizWithQuestions(projectId: string, quizId: string) {
     .eq("user_id", userId)
     .single();
   if (quizErr || !quiz) throw new Error("Quiz not found");
+  // NOTE: correct_answer/explanation are deliberately NOT selected here.
+  // Pre-submission GETs must never leak answers; per-question disclosure
+  // happens via submitAnswer (post-answer) and getQuizWithAnswers (answered only).
   const { data: questions, error: qErr } = await db
     .from("questions")
-    .select("id, concept_id, type, difficulty, question, options, correct_answer, explanation")
+    .select("id, concept_id, type, difficulty, question, options")
     .eq("quiz_id", quizId)
     .order("id", { ascending: true });
   if (qErr) throw new Error(qErr.message);
@@ -577,17 +660,38 @@ export async function getQuizWithQuestions(projectId: string, quizId: string) {
     difficulty: string;
     question: string;
     options: unknown;
-    correct_answer: string | null;
-    explanation: string | null;
   }>).map((q) => ({
-    ...q,
+    ...stripQuestionForTaking(q as Record<string, unknown>),
     concept_name: conceptMap.get(q.concept_id)?.name ?? "Unknown",
   }));
   return { quiz, questions: enriched };
 }
 
+/** Full internal fetch including answers — never returned directly by a GET route. */
+async function getQuizFull(projectId: string, quizId: string) {
+  const userId = await getCurrentUserId();
+  const db = await getDb();
+  const { data: project, error: projErr } = await db.from("projects").select("id").eq("id", projectId).eq("user_id", userId).single();
+  if (projErr || !project) throw new Error("Project not found");
+  const { data: quiz, error: quizErr } = await db
+    .from("quizzes")
+    .select("id, project_id, user_id, status, created_at, completed_at")
+    .eq("id", quizId)
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .single();
+  if (quizErr || !quiz) throw new Error("Quiz not found");
+  const { data: questions, error: qErr } = await db
+    .from("questions")
+    .select("id, concept_id, type, difficulty, question, options, correct_answer, explanation")
+    .eq("quiz_id", quizId)
+    .order("id", { ascending: true });
+  if (qErr) throw new Error(qErr.message);
+  return { quiz, questions: (questions ?? []) as Array<{ id: string; concept_id: string; type: string; difficulty: string; question: string; options: unknown; correct_answer: string | null; explanation: string | null }> };
+}
+
 export async function getQuizWithAnswers(projectId: string, quizId: string) {
-  const base = await getQuizWithQuestions(projectId, quizId);
+  const base = await getQuizFull(projectId, quizId);
   const userId = await getCurrentUserId();
   const db = await getDb();
   const qIds = base.questions.map((q) => q.id);
@@ -598,7 +702,20 @@ export async function getQuizWithAnswers(projectId: string, quizId: string) {
       answerMap.set(a.question_id, { ...a, score: a.score !== null ? Number(a.score) : null });
     }
   }
-  return { ...base, answers: answerMap, answersList: Array.from(answerMap.values()) };
+  // Concept names for display
+  const conceptIds = [...new Set(base.questions.map((q) => q.concept_id))];
+  let conceptMap = new Map<string, string>();
+  if (conceptIds.length > 0) {
+    const { data: concepts } = await db.from("concepts").select("id, name").in("id", conceptIds);
+    for (const c of (concepts ?? []) as Array<{ id: string; name: string }>) conceptMap.set(c.id, c.name);
+  }
+  // Disclose correct_answer/explanation ONLY for answered questions.
+  // Unanswered questions are stripped exactly like getQuizWithQuestions.
+  const questions = base.questions.map((q) => ({
+    ...gateQuestionForReview(q, answerMap.has(q.id)),
+    concept_name: conceptMap.get(q.concept_id) ?? "Unknown",
+  }));
+  return { quiz: base.quiz, questions, answers: answerMap, answersList: Array.from(answerMap.values()) };
 }
 
 export async function submitAnswer(
@@ -608,6 +725,9 @@ export async function submitAnswer(
   response: string
 ): Promise<{
   answer: { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | null; evaluation: AssessmentEvaluation | null; created_at: string };
+  // Disclosed because this question is now answered — the only per-question leak point.
+  correct_answer: string | null;
+  explanation: string | null;
   quizCompleted: boolean;
   quizStatus: string;
 }> {
@@ -644,6 +764,8 @@ export async function submitAnswer(
     const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
     return {
       answer: { id: ea.id, question_id: ea.question_id, response: ea.response, is_correct: ea.is_correct, score: ea.score !== null ? Number(ea.score) : null, evaluation: ea.evaluation as AssessmentEvaluation | null, created_at: ea.created_at },
+      correct_answer: qRow.correct_answer,
+      explanation: qRow.explanation,
       quizCompleted: completion.completedNow || quizStatusBefore === "completed",
       quizStatus: completion.status,
     };
@@ -719,6 +841,8 @@ export async function submitAnswer(
       const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
       return {
         answer: { id: ea.id, question_id: ea.question_id, response: ea.response, is_correct: ea.is_correct, score: ea.score !== null ? Number(ea.score) : null, evaluation: ea.evaluation as AssessmentEvaluation | null, created_at: ea.created_at },
+        correct_answer: qRow.correct_answer,
+        explanation: qRow.explanation,
         quizCompleted: completion.completedNow || completion.status === "completed",
         quizStatus: completion.status,
       };
@@ -733,6 +857,8 @@ export async function submitAnswer(
 
   return {
     answer: { id: answerRow.id, question_id: answerRow.question_id, response: answerRow.response, is_correct: answerRow.is_correct, score: answerRow.score !== null ? Number(answerRow.score) : null, evaluation: answerRow.evaluation as AssessmentEvaluation | null, created_at: answerRow.created_at },
+    correct_answer: qRow.correct_answer,
+    explanation: qRow.explanation,
     quizCompleted: completion.completedNow,
     quizStatus: completion.status,
   };

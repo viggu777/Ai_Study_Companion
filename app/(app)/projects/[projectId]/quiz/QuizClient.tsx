@@ -20,8 +20,10 @@ interface QuizQuestion {
   difficulty: string;
   question: string;
   options: string[] | null;
-  correct_answer: string | null;
-  explanation: string | null;
+  // Present only for answered questions (API strips pre-submission).
+  correct_answer?: string | null;
+  explanation?: string | null;
+  answered?: boolean;
 }
 
 interface ActiveQuiz {
@@ -193,6 +195,22 @@ export default function QuizClient({ projectId }: { projectId: string }) {
       const ans: AnswerRecord = data.answer as AnswerRecord;
       const newResults = { ...results, [currentQuestion.id]: ans };
       setResults(newResults);
+      // Merge post-answer disclosure (correct_answer/explanation for this
+      // question only) into the question so feedback can show "Expected:".
+      if (data.correct_answer !== undefined || data.explanation !== undefined) {
+        setActiveQuiz((prev) =>
+          prev
+            ? {
+                ...prev,
+                questions: prev.questions.map((q) =>
+                  q.id === currentQuestion.id
+                    ? { ...q, correct_answer: data.correct_answer ?? null, explanation: data.explanation ?? null, answered: true }
+                    : q
+                ),
+              }
+            : prev
+        );
+      }
       setShowFeedback(true);
       if (data.quizCompleted || data.quizStatus === "completed") {
         setQuizCompleted(true);
@@ -498,7 +516,11 @@ export default function QuizClient({ projectId }: { projectId: string }) {
                 </div>
               ) : (
                 <p className="text-sm text-stone-700">
-                  {currentResult.is_correct ? "Well done — your answer matches the expected answer." : `Expected: ${currentQuestion.correct_answer}`}
+                  {currentResult.is_correct
+                    ? "Well done — your answer matches the expected answer."
+                    : currentQuestion.correct_answer
+                      ? `Expected: ${currentQuestion.correct_answer}`
+                      : "Not quite — review the material and try again."}
                 </p>
               )}
               {currentQuestion.explanation && <p className="mt-2 text-xs text-stone-400">Explanation: {currentQuestion.explanation}</p>}

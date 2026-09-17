@@ -17,7 +17,6 @@ export async function GET(
     }
     const result = await getQuizWithQuestions(projectId, quizId);
     try {
-    await requireUserId();
       const withAns = await getQuizWithAnswers(projectId, quizId);
       return NextResponse.json({ ...result, answers: withAns.answersList });
     } catch {
