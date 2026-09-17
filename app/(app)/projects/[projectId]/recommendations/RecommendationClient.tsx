@@ -72,7 +72,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
             aria-pressed={filter === f}
             className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
               filter === f
-                ? "border-emerald-700 bg-emerald-700 text-white shadow-sm"
+                ? "border-sky-600 bg-sky-600 text-white shadow-sm"
                 : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:bg-stone-50"
             }`}
           >
@@ -81,7 +81,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
         ))}
         <button
           onClick={fetchRecs}
-          className="ml-auto text-xs font-medium text-emerald-700 hover:text-emerald-800"
+          className="ml-auto text-xs font-medium text-stone-800 hover:text-stone-900"
         >
           Refresh
         </button>
@@ -126,7 +126,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
                   <li key={idx} className="flex items-start gap-2.5 text-sm text-stone-700">
                     <span
                       aria-hidden
-                      className="tnum mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-700/[0.1] text-[11px] font-semibold text-emerald-800"
+                      className="tnum mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-50 text-[11px] font-semibold text-stone-800"
                     >
                       {idx + 1}
                     </span>
@@ -157,7 +157,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
                 <button
                   onClick={() => updateStatus(r.id, "ACTIVE")}
                   disabled={updatingId === r.id}
-                  className="mt-3 text-xs font-medium text-emerald-700 hover:text-emerald-800 disabled:opacity-50"
+                  className="mt-3 text-xs font-medium text-stone-800 hover:text-stone-900 disabled:opacity-50"
                 >
                   Reactivate
                 </button>

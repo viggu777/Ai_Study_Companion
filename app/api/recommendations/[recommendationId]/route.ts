@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
+import { isAuthError, requireUserId } from "@/lib/auth/getCurrentUser";
 import { getDb, getServiceDb } from "@/lib/db/supabase";
 
 export async function PATCH(
@@ -7,12 +7,13 @@ export async function PATCH(
   { params }: { params: Promise<{ recommendationId: string }> }
 ) {
   try {
+    await requireUserId();
     const { recommendationId } = await params;
     const { status } = (await req.json()) as { status: string };
     if (!["COMPLETED", "DISMISSED", "ACTIVE"].includes(status)) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
     }
-    const userId = await getCurrentUserId();
+    const userId = await requireUserId();
     const db = await getDb();
     const { data: rec, error: fetchErr } = await db.from("recommendations").select("id, project_id, title").eq("id", recommendationId).eq("user_id", userId).single();
     if (fetchErr || !rec) return NextResponse.json({ error: "Recommendation not found" }, { status: 404 });
@@ -37,7 +38,8 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("not authenticated") || msg.includes("No session")) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (isAuthError(e) || msg.includes("not authenticated") || msg.includes("No session")) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

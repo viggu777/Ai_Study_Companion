@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { getProject, updateProject, deleteProject } from "@/services/project.service";
 
 export async function GET(
@@ -6,13 +7,15 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
     const project = await getProject(projectId);
     if (!project) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     return NextResponse.json(project);
-  } catch {
+  } catch (e) {
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: "Failed to get project" }, { status: 500 });
   }
 }
@@ -22,6 +25,7 @@ export async function PATCH(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
     const { name, description, learning_goal } = await request.json();
     if (!name || name.trim() === "") {
@@ -33,7 +37,8 @@ export async function PATCH(
       learning_goal: learning_goal?.trim(),
     });
     return NextResponse.json(project);
-  } catch {
+  } catch (e) {
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: "Failed to update project" }, { status: 500 });
   }
 }
@@ -43,10 +48,12 @@ export async function DELETE(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
     await deleteProject(projectId);
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (e) {
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: "Failed to delete project" }, { status: 500 });
   }
 }

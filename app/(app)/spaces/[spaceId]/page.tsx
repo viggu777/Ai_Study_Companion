@@ -51,10 +51,10 @@ export default async function SpacePage({
               className="group rounded-xl border border-stone-200 bg-white p-5 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-hover"
             >
               <div className="flex items-start justify-between gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-700/[0.08] text-emerald-800">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-700">
                   <FolderIcon className="h-[18px] w-[18px]" />
                 </span>
-                <ArrowRightIcon className="h-4 w-4 shrink-0 text-stone-300 transition-all group-hover:translate-x-0.5 group-hover:text-emerald-700" />
+                <ArrowRightIcon className="h-4 w-4 shrink-0 text-stone-300 transition-all group-hover:translate-x-0.5 group-hover:text-stone-800" />
               </div>
               <h3 className="mt-3 font-semibold tracking-tight text-stone-900">{project.name}</h3>
               {project.description && (

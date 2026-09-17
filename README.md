@@ -33,9 +33,12 @@ the closed learning loop in `docs/architecture.md`.
    | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (client + server) |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (browser session) |
    | `SUPABASE_SERVICE_ROLE_KEY` | Service role — server/admin paths only, never the browser |
-   | `META_API_KEY` | Meta's Llama API for chat / structured output / evaluation (model `Llama-4-Maverick-17B-128E-Instruct-FP8`) |
+    | `META_API_KEY` | Meta's Llama API for chat / structured output / evaluation — production path, used when `MERCURY_API_KEY` is unset (model `Llama-4-Maverick-17B-128E-Instruct-FP8`) |
+    | `MERCURY_API_KEY` | Mercury (Inception Labs) for chat / structured output / evaluation — testing default (model `mercury-2.5`); unset it to switch back to Meta |
+    | `MERCURY_API_BASE_URL` | Optional, defaults to `https://api.inceptionlabs.ai/v1` |
+    | `MERCURY_CHAT_MODEL` | Optional, defaults to `mercury-2.5` |
    | `META_API_BASE_URL` | Optional, defaults to `https://api.llama.com/compat/v1` |
-   | `GROQ_API_KEY` | Groq for embeddings (`nomic-embed-text-v1.5`, 768 dims) — Meta's Llama API has no embeddings endpoint (verified `404` on `/v1/embeddings`), so embeddings stay on Groq and `chunks.embedding VECTOR(768)` matches. See `lib/ai/AIService.ts` header for the split. |
+    | `GROQ_API_KEY` | Only for `EMBEDDING_PROVIDER=groq` fallback (768 dims, needs column re-migration). Default embeddings are local: `BAAI/bge-small-en-v1.5` (384 dims) via Docker — see `embeddings/README.md`. `chunks.embedding` is `VECTOR(384)` per `db/schema/004_embeddings_384.sql`. |
    | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Inngest background jobs (material processing, mastery, recommendations) |
    | `ADMIN_EMAILS`, `ADMIN_USER_IDS` | Prototype admin allow-list for `/admin/*` (comma-separated) |
 

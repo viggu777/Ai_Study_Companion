@@ -177,9 +177,9 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
                 </table>
               </div>
               <div className="px-4 py-2 bg-stone-50 text-xs text-stone-400">
-                <Link href={`/projects/${projectId}/growth`} className="text-emerald-700 hover:text-emerald-800">View growth trends →</Link>
+                <Link href={`/projects/${projectId}/growth`} className="text-stone-800 hover:text-stone-900">View growth trends →</Link>
                 <span className="mx-2">·</span>
-                <Link href={`/projects/${projectId}/mastery`} className="text-emerald-700 hover:text-emerald-800">View mastery →</Link>
+                <Link href={`/projects/${projectId}/mastery`} className="text-stone-800 hover:text-stone-900">View mastery →</Link>
               </div>
             </div>
           ) : (
@@ -193,7 +193,7 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
           <div className="bg-white rounded-lg shadow-card border border-stone-200 p-4">
             <div className="flex flex-wrap gap-4 text-sm mb-3">
               <span className="px-2 py-1 rounded bg-stone-100">Total calls: {a.aiActivity.totalCalls}</span>
-              {a.aiActivity.avgLatencyMs !== null && <span className="px-2 py-1 rounded bg-emerald-50 text-emerald-700">Avg latency: {a.aiActivity.avgLatencyMs}ms</span>}
+              {a.aiActivity.avgLatencyMs !== null && <span className="px-2 py-1 rounded bg-stone-100 text-stone-800">Avg latency: {a.aiActivity.avgLatencyMs}ms</span>}
               {a.aiActivity.errorRate !== null && <span className="px-2 py-1 rounded bg-red-50 text-red-700">Error rate: {(a.aiActivity.errorRate * 100).toFixed(1)}%</span>}
             </div>
             {Object.keys(a.aiActivity.perFeature).length > 0 ? (

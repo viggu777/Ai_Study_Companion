@@ -96,6 +96,20 @@ async function getLearningContext(projectId: string, userId: string): Promise<st
       .join(", ");
     if (weak) parts.push(`Weak concepts: ${weak}`);
   }
+  // File inventory so the tutor can answer "do you have X pdf / list my files".
+  // This is metadata, not evidence — content answers still need citations.
+  const { data: mats } = await db
+    .from("materials")
+    .select("filename, status, page_count")
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true });
+  if (mats && mats.length > 0) {
+    const inv = (mats as Array<{ filename: string; status: string; page_count: number | null }>)
+      .map((m) => `${m.filename} (${m.status}${m.page_count ? `, ${m.page_count} pages` : ""})`)
+      .join("; ");
+    parts.push(`Available materials: ${inv}`);
+  }
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
 

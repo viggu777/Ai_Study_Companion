@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { submitAnswer } from "@/services/quiz.service";
 
 export async function POST(
@@ -6,6 +7,7 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string; quizId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId, quizId } = await params;
     const body = await request.json().catch(() => ({}));
     const questionId = (body.questionId as string) ?? (body.question_id as string) ?? (body.question_id as string);
@@ -17,6 +19,7 @@ export async function POST(
     return NextResponse.json(result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found") || msg.includes("Quiz not found") || msg.includes("Question not found")) {
       return NextResponse.json({ error: msg }, { status: 404 });
     }

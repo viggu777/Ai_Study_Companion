@@ -8,7 +8,7 @@ This directory contains SQL migration files for the AI Study Companion database 
 
 1. Open your Supabase project dashboard
 2. Go to **SQL Editor**
-3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` (in order)
+3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` then `003_storage.sql` then `004_embeddings_384.sql` (in order)
 4. Paste into a new query and run it
 
 ### Option 2: Supabase CLI
@@ -64,6 +64,6 @@ SELECT * FROM spaces; -- Should return 0 rows for other user's data
 
 - The migration enables the `pgvector` extension for embeddings
 - All user-owned tables have RLS enabled with `user_id = auth.uid()` policies
-- The `chunks.embedding` column (768 dimensions, nomic-embed-text-v1.5) has an IVFFlat index for cosine similarity search
+- The `chunks.embedding` column is `VECTOR(384)` (local BAAI/bge-small-en-v1.5 via `embeddings/` Docker service) with an IVFFlat index for cosine similarity search — migrated from 768 (Groq nomic) by `004_embeddings_384.sql`, which also purges incompatible old chunks. Never mix dimensions.
 - A unique partial index on `learning_events` prevents duplicate processing of `QUIZ_COMPLETED` and `MATERIAL_READY` events
 - Foreign keys use `ON DELETE CASCADE` following the hierarchy: User → Space → Project → child entities

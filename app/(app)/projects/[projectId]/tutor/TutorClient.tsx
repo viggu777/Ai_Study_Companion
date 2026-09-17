@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, useRef } from "react";
-import { Badge, Button, Spinner, inputClass } from "@/components/ui";
-import { ArrowRightIcon, BookIcon, ChatIcon } from "@/components/icons";
+import { Badge, LinkButton } from "@/components/ui";
+import { ArrowRightIcon, BookIcon, ChatIcon, QuizIcon, SparkIcon } from "@/components/icons";
 
 interface Citation {
   materialId: string;
@@ -26,6 +27,8 @@ interface MessageRow {
   citations: unknown;
   created_at: string;
   parsed?: TutorResponse | null;
+  /** local-only navigation card (never persisted server-side) */
+  kind?: "quiz-card";
 }
 
 function parseAssistant(m: MessageRow): TutorResponse | null {
@@ -37,16 +40,39 @@ function parseAssistant(m: MessageRow): TutorResponse | null {
   }
 }
 
+/** "give me a quiz / test me / mock test / practice questions" → go to Quiz page */
+function isQuizIntent(text: string): boolean {
+  return /\b(quiz|quizzes|test me|mock test|practice(\s+questions)?|assess me)\b/i.test(text);
+}
+
+const SUGGESTIONS = [
+  "Summarize my PDFs",
+  "Give me a quiz",
+  "What files do I have?",
+  "What are the key concepts?",
+];
+
 function TypingDots() {
   return (
-    <span className="flex items-center gap-1 py-1" aria-label="Generating answer">
+    <span className="flex items-center gap-1.5 py-2" aria-label="Generating answer">
       {[0, 1, 2].map((i) => (
         <span
           key={i}
-          className="h-2 w-2 animate-bounce rounded-full bg-emerald-700"
+          className="h-2 w-2 animate-bounce rounded-full bg-stone-400"
           style={{ animationDelay: `${i * 150}ms` }}
         />
       ))}
+    </span>
+  );
+}
+
+function AssistantAvatar() {
+  return (
+    <span
+      aria-hidden
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white"
+    >
+      <SparkIcon className="h-4 w-4" />
     </span>
   );
 }
@@ -57,7 +83,9 @@ export default function TutorClient({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fetching, setFetching] = useState(true);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const scrollBottom = () => bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 
@@ -83,11 +111,43 @@ export default function TutorClient({ projectId }: { projectId: string }) {
     scrollBottom();
   }, [messages, loading]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Autogrow the composer (ChatGPT-style), capped at ~5 lines
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 140) + "px";
+  }, [question]);
+
+  const pushQuizCard = (q: string) => {
+    const now = new Date().toISOString();
+    setMessages((prev) => [
+      ...prev,
+      { id: `user-${Date.now()}`, role: "user", content: q, citations: null, created_at: now },
+      {
+        id: `quiz-card-${Date.now()}`,
+        role: "assistant",
+        content: "",
+        citations: [],
+        created_at: now,
+        kind: "quiz-card",
+      },
+    ]);
+  };
+
+  const submit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     const q = question.trim();
     if (!q || loading) return;
     setError(null);
+
+    // Quiz intent → navigate to the Quiz page instead of asking the tutor
+    if (isQuizIntent(q)) {
+      setQuestion("");
+      pushQuizCard(q);
+      return;
+    }
+
     setLoading(true);
     // Optimistic user message
     const tempId = `temp-user-${Date.now()}`;
@@ -125,10 +185,29 @@ export default function TutorClient({ projectId }: { projectId: string }) {
     }
   };
 
+  const copyAnswer = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((v) => (v === id ? null : v)), 1600);
+    } catch {
+      // clipboard unavailable — ignore
+    }
+  };
+
+  const applySuggestion = (s: string) => {
+    if (isQuizIntent(s)) {
+      pushQuizCard(s);
+      return;
+    }
+    setQuestion(s);
+    inputRef.current?.focus();
+  };
+
   if (fetching) {
     return (
-      <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-card" aria-busy="true" aria-label="Loading conversation">
-        <div className="space-y-3">
+      <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-card" aria-busy="true" aria-label="Loading conversation">
+        <div className="mx-auto max-w-3xl space-y-4">
           <div className="skeleton h-10 w-2/3" />
           <div className="ml-auto skeleton h-10 w-1/2" />
           <div className="skeleton h-16 w-3/4" />
@@ -138,120 +217,211 @@ export default function TutorClient({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="fade-enter flex h-[70vh] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-card">
-      <div className="flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
-        {messages.length === 0 && (
-          <div className="py-10 text-center">
-            <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-700/[0.08] text-emerald-800">
-              <ChatIcon className="h-5 w-5" />
-            </div>
-            <p className="text-sm font-medium text-stone-900">Ask anything about your materials</p>
-            <p className="mx-auto mt-1 max-w-sm text-sm text-stone-500">
-              Try: &quot;What are the key concepts in my PDF?&quot; Answers cite the exact page.
-            </p>
-          </div>
-        )}
-        {messages.map((m) => {
-          if (m.role === "user") {
-            return (
-              <div key={m.id} className="flex justify-end">
-                <div className="max-w-[80%] rounded-2xl rounded-br-md bg-emerald-700 px-4 py-2.5 shadow-card">
-                  <p className="whitespace-pre-wrap text-sm text-white">{m.content}</p>
-                </div>
+    <div className="fade-enter flex h-[calc(100dvh-16rem)] min-h-[520px] flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-card">
+      {/* Thread */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-6">
+          {messages.length === 0 && (
+            <div className="py-8 text-center sm:py-12">
+              <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-sky-600 text-white">
+                <ChatIcon className="h-6 w-6" />
               </div>
-            );
-          }
-          const parsed = parseAssistant(m);
-          if (!parsed) {
-            return (
-              <div key={m.id} className="flex justify-start">
-                <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-stone-200 bg-stone-50 px-4 py-2.5">
-                  <p className="whitespace-pre-wrap text-sm text-stone-800">{m.content}</p>
-                </div>
-              </div>
-            );
-          }
-          const isInsufficient = !parsed.grounded && parsed.citations.length === 0;
-          return (
-            <div key={m.id} className="flex justify-start">
-              <div
-                className={`max-w-[88%] rounded-2xl rounded-bl-md border px-4 py-3 shadow-card ${
-                  isInsufficient
-                    ? "border-amber-300 bg-amber-50"
-                    : "border-stone-200 bg-white"
-                }`}
-              >
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  <Badge
-                    tone={
-                      parsed.confidence === "high"
-                        ? "success"
-                        : parsed.confidence === "medium"
-                          ? "accent"
-                          : "warning"
-                    }
+              <h2 className="text-xl font-semibold tracking-tight text-stone-900">
+                What do you want to learn today?
+              </h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-stone-500">
+                Ask anything about your uploaded PDFs — every answer cites the exact page it came from.
+              </p>
+              <div className="mx-auto mt-6 flex max-w-lg flex-wrap justify-center gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => applySuggestion(s)}
+                    className="rounded-full border border-stone-200 bg-white px-4 py-2 text-sm text-stone-700 shadow-card transition-colors hover:border-stone-400 hover:bg-stone-50"
                   >
-                    {parsed.confidence} confidence
-                  </Badge>
-                  <Badge tone={parsed.grounded ? "success" : "danger"}>
-                    {parsed.grounded ? "grounded" : "not grounded"}
-                  </Badge>
-                  {isInsufficient && <Badge tone="warning">insufficient evidence</Badge>}
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {messages.map((m) => {
+            if (m.role === "user") {
+              return (
+                <div key={m.id} className="flex justify-end">
+                  <div className="max-w-[80%] rounded-3xl bg-stone-100 px-5 py-2.5">
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-stone-900">{m.content}</p>
+                  </div>
                 </div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-stone-900">{parsed.answer}</p>
-                {parsed.citations.length > 0 && (
-                  <div className="mt-3 border-t border-stone-100 pt-2.5">
-                    <div className="flex flex-wrap gap-1.5">
-                      {parsed.citations.map((c, idx) => (
-                        <span key={idx} className="inline-flex items-center gap-1 rounded-md bg-stone-100 px-2 py-1 text-xs text-stone-600">
-                          <BookIcon className="h-3 w-3" />
-                          {c.materialName} · p.{c.page}
-                        </span>
-                      ))}
+              );
+            }
+
+            // Local quiz-navigation card
+            if (m.kind === "quiz-card") {
+              return (
+                <div key={m.id} className="flex gap-3">
+                  <AssistantAvatar />
+                  <div className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-stone-50 p-5">
+                    <div className="flex items-center gap-2">
+                      <QuizIcon className="h-5 w-5 text-stone-700" />
+                      <p className="text-[15px] font-semibold text-stone-900">Ready for a quiz?</p>
+                    </div>
+                    <p className="mt-1.5 text-sm leading-relaxed text-stone-600">
+                      I&apos;ll test you with adaptive questions picked from your weakest concepts — difficulty adjusts to your answers.
+                    </p>
+                    <div className="mt-4">
+                      <LinkButton href={`/projects/${projectId}/quiz`}>
+                        Start quiz
+                        <ArrowRightIcon className="h-4 w-4" />
+                      </LinkButton>
                     </div>
                   </div>
-                )}
-                {parsed.followUpSuggestion && (
-                  <p className="mt-2.5 text-xs italic text-stone-500">Next: {parsed.followUpSuggestion}</p>
-                )}
+                </div>
+              );
+            }
+
+            const parsed = parseAssistant(m);
+            if (!parsed) {
+              return (
+                <div key={m.id} className="flex gap-3">
+                  <AssistantAvatar />
+                  <p className="min-w-0 flex-1 whitespace-pre-wrap text-[15px] leading-relaxed text-stone-800">{m.content}</p>
+                </div>
+              );
+            }
+            const isInsufficient = !parsed.grounded && parsed.citations.length === 0;
+            return (
+              <div key={m.id} className="group flex gap-3">
+                <AssistantAvatar />
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={`rounded-2xl px-5 py-4 ${
+                      isInsufficient ? "border border-amber-200 bg-amber-50" : "bg-white"
+                    }`}
+                  >
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                      <Badge
+                        tone={
+                          parsed.confidence === "high"
+                            ? "success"
+                            : parsed.confidence === "medium"
+                              ? "accent"
+                              : "warning"
+                        }
+                      >
+                        {parsed.confidence} confidence
+                      </Badge>
+                      <Badge tone={parsed.grounded ? "success" : "danger"}>
+                        {parsed.grounded ? "grounded" : "not grounded"}
+                      </Badge>
+                      {isInsufficient && <Badge tone="warning">insufficient evidence</Badge>}
+                    </div>
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-stone-900">{parsed.answer}</p>
+                    {parsed.citations.length > 0 && (
+                      <div className="mt-4">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-stone-400">Sources</p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {parsed.citations.map((c, idx) => (
+                            <span key={idx} className="inline-flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-600">
+                              <BookIcon className="h-3.5 w-3.5 shrink-0 text-stone-400" />
+                              <span className="truncate" title={`${c.materialName} · page ${c.page}`}>
+                                {c.materialName} · p.{c.page}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {parsed.followUpSuggestion && (
+                      <button
+                        type="button"
+                        onClick={() => applySuggestion(parsed.followUpSuggestion)}
+                        className="mt-3 inline-flex max-w-full items-center gap-1.5 truncate rounded-full bg-stone-100 px-3.5 py-1.5 text-xs text-stone-700 transition-colors hover:bg-stone-200"
+                        title={parsed.followUpSuggestion}
+                      >
+                        <SparkIcon className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">Try: {parsed.followUpSuggestion}</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => copyAnswer(m.id, parsed.answer)}
+                      className="rounded-md px-2 py-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
+                    >
+                      {copiedId === m.id ? "Copied" : "Copy"}
+                    </button>
+                    <Link
+                      href={`/projects/${projectId}/quiz`}
+                      className="rounded-md px-2 py-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
+                    >
+                      Quiz me on this
+                    </Link>
+                  </div>
+                </div>
               </div>
-            </div>
-          );
-        })}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl rounded-bl-md border border-stone-200 bg-white px-4 py-3 shadow-card">
+            );
+          })}
+
+          {loading && (
+            <div className="flex gap-3">
+              <AssistantAvatar />
               <TypingDots />
             </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
+          )}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {error && (
-        <div className="mx-4 mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-          {error}
+        <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+          <div className="mb-2 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700" role="alert">
+            {error}
+          </div>
         </div>
       )}
 
-      <form onSubmit={submit} className="border-t border-stone-200 bg-stone-50/60 p-3 sm:p-4">
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ask a question about your materials…"
-            className={inputClass}
-            disabled={loading}
-            aria-label="Ask a question"
-          />
-          <Button type="submit" disabled={loading || !question.trim()} className="shrink-0">
-            {loading ? <Spinner className="text-white" /> : <ArrowRightIcon className="h-4 w-4" />}
-            <span className="hidden sm:inline">{loading ? "Asking" : "Ask"}</span>
-          </Button>
-        </div>
-        <p className="mt-2 text-xs text-stone-400">Answers are grounded in your project&apos;s uploaded PDFs, with page citations.</p>
-      </form>
+      {/* Composer */}
+      <div className="border-t border-stone-200 bg-white">
+        <form onSubmit={submit} className="mx-auto max-w-3xl px-4 py-4 sm:px-6">
+          <div className="flex items-end gap-2 rounded-[26px] border border-stone-300 bg-white px-4 py-2 shadow-card transition-colors focus-within:border-stone-500">
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              placeholder="Message your tutor…"
+              className="max-h-[140px] flex-1 resize-none bg-transparent py-2 text-[15px] text-stone-900 placeholder:text-stone-400 focus:outline-none"
+              disabled={loading}
+              aria-label="Message your tutor"
+            />
+            <button
+              type="submit"
+              disabled={loading || !question.trim()}
+              aria-label="Send message"
+              className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white transition-all hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-200"
+            >
+              {loading ? (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+              ) : (
+                <ArrowRightIcon className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+          <p className="mt-2 text-center text-xs text-stone-400">
+            Grounded in your project&apos;s PDFs · Shift + Enter for a new line
+          </p>
+        </form>
+      </div>
     </div>
   );
 }

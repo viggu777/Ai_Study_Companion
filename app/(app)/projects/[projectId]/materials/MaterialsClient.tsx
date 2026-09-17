@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Badge, Button, Card, EmptyState, Spinner } from "@/components/ui";
+import { formatDateTime } from "@/lib/datetime";
 import { BookIcon, UploadIcon } from "@/components/icons";
 
 type Material = {
@@ -37,6 +38,7 @@ export default function MaterialsClient({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -128,6 +130,22 @@ export default function MaterialsClient({
     }
   }
 
+  async function handleDelete(materialId: string) {
+    setDeletingId(materialId);
+    setError("");
+    try {
+      const res = await fetch(`/api/materials/${materialId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Delete failed");
+        return;
+      }
+      setMaterials((prev) => prev.filter((m) => m.id !== materialId));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   const isEmpty = materials.length === 0;
 
   return (
@@ -143,7 +161,7 @@ export default function MaterialsClient({
               name="file"
               type="file"
               accept="application/pdf"
-              className="block w-full cursor-pointer rounded-lg border border-dashed border-stone-300 bg-stone-50 px-3 py-2.5 text-sm text-stone-600 transition-colors file:mr-4 file:rounded-md file:border-0 file:bg-emerald-700 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:border-emerald-600 hover:file:bg-emerald-800"
+              className="block w-full cursor-pointer rounded-lg border border-dashed border-stone-300 bg-stone-50 px-3 py-2.5 text-sm text-stone-600 transition-colors file:mr-4 file:rounded-md file:border-0 file:bg-sky-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:border-sky-600 hover:file:bg-stone-800"
               disabled={uploading}
             />
             <p className="mt-1.5 text-xs text-stone-400">PDF only, max 10 MB. Status moves QUEUED → PROCESSING → READY.</p>
@@ -189,17 +207,27 @@ export default function MaterialsClient({
                       <StatusBadge status={m.status} />
                     </td>
                     <td className="tnum hidden px-4 py-3 text-stone-600 sm:table-cell">{m.page_count ?? "—"}</td>
-                    <td className="whitespace-nowrap px-4 py-3 text-stone-500 md:table-cell">{new Date(m.created_at).toLocaleString()}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-stone-500 md:table-cell">{formatDateTime(m.created_at)}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-right">
                       {m.status === "FAILED" && (
-                        <button
-                          onClick={() => handleRetry(m.id)}
-                          disabled={retryingId === m.id}
-                          className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700 hover:text-emerald-800 disabled:opacity-50"
-                        >
-                          {retryingId === m.id && <Spinner />}
-                          {retryingId === m.id ? "Retrying…" : "Retry"}
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleRetry(m.id)}
+                            disabled={retryingId === m.id || deletingId === m.id}
+                            className="mr-3 inline-flex items-center gap-1.5 text-sm font-medium text-stone-800 hover:text-stone-900 disabled:opacity-50"
+                          >
+                            {retryingId === m.id && <Spinner />}
+                            {retryingId === m.id ? "Retrying…" : "Retry"}
+                          </button>
+                          <button
+                            onClick={() => handleDelete(m.id)}
+                            disabled={deletingId === m.id || retryingId === m.id}
+                            title="Remove this failed upload (its file was never stored, so retry cannot work)"
+                            className="inline-flex items-center gap-1.5 text-sm font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+                          >
+                            {deletingId === m.id ? "Deleting…" : "Delete"}
+                          </button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -211,7 +239,7 @@ export default function MaterialsClient({
       )}
 
       <p className="text-xs text-stone-400">
-        Background pipeline: upload → PROCESSING → extract → chunk → embed (Groq 768) → concepts (Meta) → READY. Failures land in FAILED with a retry action.
+        Background pipeline: upload → PROCESSING → extract → chunk → embed (bge-small 384, local Docker) → concepts (Mercury) → READY. Failures land in FAILED with retry/delete actions.
       </p>
     </div>
   );

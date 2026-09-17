@@ -18,7 +18,7 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
   if (error) {
     return (
       <div className="space-y-4">
-        <Link href="/admin/users" className="text-sm text-emerald-700 hover:text-emerald-800">
+        <Link href="/admin/users" className="text-sm text-stone-800 hover:text-stone-900">
           ← Back to users
         </Link>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
@@ -33,7 +33,7 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-3">
-        <Link href="/admin/users" className="text-sm text-emerald-700 hover:text-emerald-800">
+        <Link href="/admin/users" className="text-sm text-stone-800 hover:text-stone-900">
           ← Users
         </Link>
         <span className="text-stone-300">/</span>

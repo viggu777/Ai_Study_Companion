@@ -38,7 +38,7 @@ Every AI feature exists to either produce evidence or act on evidence. There is 
 | Auth | Supabase Auth | Session handling, JWT, RLS integration all built-in — no custom auth needed |
 | File storage | Supabase Storage | PDFs; same project as DB/Auth, one less service to wire up |
 | Background jobs | Inngest | Event-driven, retries, step functions, no infra to manage, generous free tier |
-| LLM provider | Meta's Llama API for chat/structured/evaluation + Groq for embeddings (via thin `AIService` abstraction) | Llama API: OpenAI-compatible, current instruct model `Llama-4-Maverick-17B-128E-Instruct-FP8`, JSON mode (`response_format: json_object`) + server-side validation; Groq: `nomic-embed-text-v1.5` (768 dims) because Meta's Llama API has no embeddings endpoint (verified 404 on `POST /v1/embeddings` 2026-09-15). See `lib/ai/AIService.ts` header. |
+| LLM provider | Mercury (Inception Labs) for chat/structured/evaluation + local FastEmbed (BAAI/bge-small-en-v1.5) for embeddings (via thin `AIService` abstraction) | Mercury `mercury-2.5`, OpenAI-compatible + JSON mode (`response_format: json_object`) + server-side validation, with reasoning-model shaping (token headroom, temp clamp, `reasoning_effort=low` for structured tasks); local embeddings: `embeddings/` Docker service (384 dims, no API key) because neither Mercury nor Meta exposes an embeddings endpoint (both verified 404). Groq `nomic-embed-text-v1.5` (768 dims) kept only as explicit `EMBEDDING_PROVIDER=groq` fallback. See `lib/ai/AIService.ts` header. |
 | Deployment | Vercel (app) + Supabase (data/auth/storage) + Inngest (jobs) | Zero-ops for a solo dev on a 2–3 day timeline |
 
 **Explicitly not used:** microservices, Kubernetes, a second/dedicated vector DB, custom auth, custom message queues, multi-provider AI abstraction. See §16 "What We Deliberately Did Not Build."
@@ -167,7 +167,7 @@ materials        (id, project_id, user_id, filename, storage_path, mime_type,
                   page_count, processing_error, created_at, updated_at)
 
 chunks           (id, material_id, project_id, content, page_number,
-                   chunk_index, embedding VECTOR(768), metadata JSONB, created_at)
+                    chunk_index, embedding VECTOR(384), metadata JSONB, created_at)
 
 concepts         (id, project_id, name, description, source_material_id,
                   created_at, updated_at)
@@ -395,7 +395,7 @@ Supabase (Auth + Postgres + pgvector + Storage)
 Inngest (background jobs)
 ```
 
-Required env vars: `DATABASE_URL, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, META_API_KEY, META_API_BASE_URL (optional, defaults to https://api.llama.com/compat/v1), GROQ_API_KEY (embeddings only), INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY`. Provide `.env.example`; never commit secrets. Note: `NEXT_PUBLIC_` prefix is required for Next.js client-side Supabase access; server-side code uses the same values via `process.env.NEXT_PUBLIC_SUPABASE_*`. AI is split: Meta Llama API handles `generateText`/`generateStructured`/`evaluate` (model `Llama-4-Maverick-17B-128E-Instruct-FP8`, JSON mode via `response_format: json_object` + server-side validation); Groq handles `generateEmbedding` (`nomic-embed-text-v1.5`, 768 dims) because Meta's Llama API has no embeddings endpoint (verified 404 on `POST /v1/embeddings` 2026-09-15). `chunks.embedding VECTOR(768)` matches Groq output.
+Required env vars: `DATABASE_URL, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, MERCURY_API_KEY, MERCURY_API_BASE_URL (optional, defaults to https://api.inceptionlabs.ai/v1), MERCURY_CHAT_MODEL (optional, defaults to mercury-2.5), META_API_KEY, META_API_BASE_URL (optional, defaults to https://api.llama.com/compat/v1), EMBEDDING_PROVIDER (local|groq, default local), EMBEDDING_API_BASE_URL (optional, defaults to http://localhost:8000/v1), EMBEDDING_MODEL (optional, defaults to BAAI/bge-small-en-v1.5), GROQ_API_KEY (groq fallback only), INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY`. Provide `.env.example`; never commit secrets. Note: `NEXT_PUBLIC_` prefix is required for Next.js client-side Supabase access; server-side code uses the same values via `process.env.NEXT_PUBLIC_SUPABASE_*`. AI is split: chat/structured/evaluate default to Mercury (`mercury-2.5`, reasoning model — needs `max_completion_tokens` headroom, temp clamped to [0.5,1], `reasoning_effort=low` for structured tasks; see `lib/ai/AIService.ts`) and fall back to Meta Llama API (`Llama-4-Maverick-17B-128E-Instruct-FP8`) when `MERCURY_API_KEY` is unset (production switch = unset Mercury + set Meta, no code change); Groq handles `generateEmbedding` (local FastEmbed `BAAI/bge-small-en-v1.5`, 384 dims, Docker in `embeddings/`; Groq `nomic-embed-text-v1.5` 768 dims only as explicit fallback) because neither Mercury nor Meta exposes an embeddings endpoint (both verified 404). `chunks.embedding VECTOR(384)` matches local output.
 
 ---
 

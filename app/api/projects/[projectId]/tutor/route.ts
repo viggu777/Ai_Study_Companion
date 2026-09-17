@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { askTutor, getTutorHistory } from "@/services/tutor.service";
 
 export async function GET(
@@ -6,11 +7,13 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
     const history = await getTutorHistory(projectId);
     return NextResponse.json(history);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     return NextResponse.json({ error: "Failed to fetch tutor history" }, { status: 500 });
   }
@@ -21,6 +24,7 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
     const question = (body.question as string) ?? (body.q as string) ?? "";
@@ -29,6 +33,7 @@ export async function POST(
     return NextResponse.json(result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     if (msg.includes("Question is required") || msg.includes("too long")) {
       return NextResponse.json({ error: msg }, { status: 400 });

@@ -472,16 +472,29 @@ export async function generateQuiz(
 
   const quizId = (quiz as { id: string }).id;
 
-  const rowsToInsert = validated!.questions.map((q) => ({
-    quiz_id: quizId,
-    concept_id: q.concept_id,
-    type: q.type,
-    difficulty: q.difficulty,
-    question: q.question,
-    options: q.options ? q.options : null,
-    correct_answer: q.correct_answer,
-    explanation: q.explanation,
-  }));
+  // LLMs overwhelmingly place the correct MCQ answer first, so users quickly
+  // learn "option A is always right". Shuffle server-side (Fisher-Yates) so
+  // position carries zero signal. Grading compares response strings against
+  // correct_answer, so shuffling is grading-safe.
+  const rowsToInsert = validated!.questions.map((q) => {
+    let options = q.options ? [...q.options] : null;
+    if (q.type === "MCQ" && options) {
+      for (let i = options.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [options[i], options[j]] = [options[j], options[i]];
+      }
+    }
+    return {
+      quiz_id: quizId,
+      concept_id: q.concept_id,
+      type: q.type,
+      difficulty: q.difficulty,
+      question: q.question,
+      options,
+      correct_answer: q.correct_answer,
+      explanation: q.explanation,
+    };
+  });
 
   const { data: insertedQuestions, error: qErr } = await db.from("questions").insert(rowsToInsert).select();
   if (qErr) {
@@ -768,6 +781,15 @@ async function tryCompleteQuizIfNeeded(projectId: string, quizId: string, userId
         try {
           const { updateMasteryForQuiz } = await import("@/services/mastery.service");
           await updateMasteryForQuiz({ quizId, projectId, userId, spaceId });
+          // The Inngest mastery-update function would normally chain
+          // mastery/updated → recommendation-generate from here. Since Inngest
+          // is unreachable, chain directly so recommendations are not dropped.
+          try {
+            const { generateRecommendationForProject } = await import("@/services/recommendation.service");
+            await generateRecommendationForProject({ projectId, userId, spaceId });
+          } catch (recErr) {
+            console.error("Fallback recommendation generation failed:", recErr);
+          }
         } catch (err) {
           console.error("Fallback mastery update failed:", err);
         }

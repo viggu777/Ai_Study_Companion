@@ -83,7 +83,7 @@ function NavSection({
 }) {
   return (
     <div>
-      <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-200/50">
+      <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-400">
         {title}
       </p>
       <ul className="space-y-0.5">
@@ -101,21 +101,14 @@ function NavSection({
                 className={cx(
                   "group relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] font-medium transition-all",
                   active
-                    ? "bg-emerald-800 text-white shadow-card"
-                    : "text-emerald-100/70 hover:bg-white/[0.06] hover:text-white"
+                    ? "bg-sky-600 text-white shadow-card"
+                    : "text-stone-600 hover:bg-stone-100 hover:text-stone-900"
                 )}
               >
-                <span
-                  aria-hidden
-                  className={cx(
-                    "absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-emerald-300 transition-opacity",
-                    active ? "opacity-100" : "opacity-0"
-                  )}
-                />
                 <Icon
                   className={cx(
                     "h-[18px] w-[18px] shrink-0 transition-colors",
-                    active ? "text-emerald-200" : "text-emerald-100/45 group-hover:text-emerald-100/80"
+                    active ? "text-white" : "text-stone-400 group-hover:text-stone-700"
                   )}
                 />
                 {item.label}
@@ -142,13 +135,13 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
       <Link href="/dashboard" onClick={close} className="flex items-center gap-2.5 px-4 pb-5 pt-5">
         <span
           aria-hidden
-          className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-emerald-400 to-emerald-700 text-base font-bold text-white shadow-card"
+          className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-sky-600 text-base font-bold text-white shadow-card"
         >
           A
         </span>
         <span className="leading-tight">
-          <span className="block text-[14px] font-semibold tracking-tight text-white">AI Study</span>
-          <span className="block text-[14px] font-semibold tracking-tight text-white">Companion</span>
+          <span className="block text-[14px] font-semibold tracking-tight text-stone-900">AI Study</span>
+          <span className="block text-[14px] font-semibold tracking-tight text-stone-900">Companion</span>
         </span>
       </Link>
 
@@ -162,16 +155,16 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
         )}
       </nav>
 
-      <div className="border-t border-white/10 p-3">
+      <div className="border-t border-stone-200 p-3">
         <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
           <span
             aria-hidden
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-semibold text-emerald-50"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-600 text-xs font-semibold text-white"
           >
             {initial}
           </span>
           {userEmail && (
-            <p className="min-w-0 flex-1 truncate text-xs text-emerald-100/70" title={userEmail}>
+            <p className="min-w-0 flex-1 truncate text-xs text-stone-500" title={userEmail}>
               {userEmail}
             </p>
           )}
@@ -179,7 +172,7 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
         <form action="/api/auth/logout" method="POST">
           <button
             type="submit"
-            className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] font-medium text-emerald-100/70 transition-colors hover:bg-white/[0.06] hover:text-white"
+            className="mt-1 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] font-medium text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900"
           >
             <LogoutIcon className="h-[18px] w-[18px]" />
             Logout
@@ -192,17 +185,17 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
   return (
     <>
       {/* Mobile top bar */}
-      <div className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-emerald-900 bg-emerald-950/95 px-4 backdrop-blur lg:hidden">
+      <div className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-stone-200 bg-white/95 px-4 backdrop-blur lg:hidden">
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-label="Toggle navigation"
           aria-expanded={open}
-          className="rounded-lg p-2 text-emerald-100 transition-colors hover:bg-white/10"
+          className="rounded-lg p-2 text-stone-600 transition-colors hover:bg-stone-100"
         >
           {open ? <CloseIcon className="h-5 w-5" /> : <MenuIcon className="h-5 w-5" />}
         </button>
-        <Link href="/dashboard" className="text-sm font-semibold tracking-tight text-white">
+        <Link href="/dashboard" className="text-sm font-semibold tracking-tight text-stone-900">
           AI Study Companion
         </Link>
       </div>
@@ -210,7 +203,7 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
       {/* Mobile overlay */}
       {open && (
         <div
-          className="fade-enter fixed inset-0 z-30 bg-emerald-950/60 backdrop-blur-[2px] lg:hidden"
+          className="fade-enter fixed inset-0 z-30 bg-stone-900/40 backdrop-blur-[2px] lg:hidden"
           onClick={close}
           aria-hidden
         />
@@ -219,7 +212,7 @@ export default function Sidebar({ userEmail, isAdmin }: SidebarProps) {
       {/* Sidebar panel */}
       <aside
         className={cx(
-          "fixed inset-y-0 left-0 z-40 w-[264px] transform bg-emerald-950 shadow-2xl transition-transform duration-200 ease-out lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 w-[264px] transform border-r border-stone-200 bg-white shadow-2xl transition-transform duration-200 ease-out lg:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full"
         )}
       >

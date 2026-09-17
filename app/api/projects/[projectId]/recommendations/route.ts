@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
+import { isAuthError, requireUserId } from "@/lib/auth/getCurrentUser";
 import { getDb } from "@/lib/db/supabase";
 
 export async function GET(
@@ -7,8 +7,9 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    await requireUserId();
     const { projectId } = await params;
-    const userId = await getCurrentUserId();
+    const userId = await requireUserId();
     const db = await getDb();
     const { data: proj } = await db.from("projects").select("id").eq("id", projectId).eq("user_id", userId).single();
     if (!proj) return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -23,7 +24,8 @@ export async function GET(
     return NextResponse.json({ recommendations: data ?? [] });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("not authenticated") || msg.includes("No session")) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (isAuthError(e) || msg.includes("not authenticated") || msg.includes("No session")) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

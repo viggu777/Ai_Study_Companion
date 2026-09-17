@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
+import { isAuthError, requireUserId } from "@/lib/auth/getCurrentUser";
 import { retrieve, DEFAULT_TOP_K, RELEVANCE_THRESHOLD } from "@/lib/rag/retrieve";
 
 /**
@@ -13,7 +13,7 @@ export async function GET(
 ) {
   try {
     const { projectId } = await params;
-    const userId = await getCurrentUserId();
+    const userId = await requireUserId();
     const { searchParams } = new URL(request.url);
     const query = searchParams.get("q") ?? searchParams.get("query") ?? "";
     const kRaw = searchParams.get("k");
@@ -34,6 +34,7 @@ export async function GET(
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     return NextResponse.json({ error: msg || "Retrieve failed" }, { status: 500 });
   }
@@ -49,7 +50,7 @@ export async function POST(
 ) {
   try {
     const { projectId } = await params;
-    const userId = await getCurrentUserId();
+    const userId = await requireUserId();
     const body = await request.json().catch(() => ({}));
     const query = (body.query as string) ?? "";
     const topK = body.topK ? Math.min(20, Math.max(1, Number(body.topK) || DEFAULT_TOP_K)) : DEFAULT_TOP_K;
@@ -61,6 +62,7 @@ export async function POST(
     return NextResponse.json({ ...result, meta: { projectId, query, topK, threshold } });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     return NextResponse.json({ error: msg || "Retrieve failed" }, { status: 500 });
   }

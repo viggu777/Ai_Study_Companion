@@ -47,10 +47,85 @@ export interface RetrieveOptions {
 }
 
 /**
+ * Extract short letter-digit codes (e.g. "5a" from "Session5a_qa.pdf" or
+ * "questions5a") used to match a user question to an uploaded filename.
+ * Only digits + the single following letter count, so "5a" in the query
+ * matches "5a" in the filename even inside longer tokens ("5aqa").
+ * Matched on equality only — "5a" never matches "5b".
+ */
+export function extractFileCodes(text: string): string[] {
+  const codes = text.toLowerCase().match(/\d+[a-z]/g) ?? [];
+  return [...new Set(codes)];
+}
+
+/** File stems the question appears to name, e.g. "questions5a" ~ "Session5a_qa.pdf". */
+export function matchMaterialByName(
+  query: string,
+  materials: Array<{ id: string; filename: string }>
+): string | null {
+  const qCodes = extractFileCodes(query);
+  if (qCodes.length === 0) return null;
+  const qNorm = query.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const m of materials) {
+    const stem = m.filename.toLowerCase().replace(/\.pdf$/, "").replace(/[^a-z0-9]/g, "");
+    if (!stem) continue;
+    // Direct stem containment either way ("session5a" in query or vice versa)
+    if (qNorm.includes(stem) || stem.includes(qNorm)) return m.id;
+    // Shared letter-digit code ("5a" in both "questions5a" and "session5aqa")
+    const mCodes = extractFileCodes(stem);
+    if (qCodes.some((c) => mCodes.includes(c))) return m.id;
+  }
+  return null;
+}
+
+/**
+ * Balance ranked chunks across materials so every material with relevant
+ * chunks is represented in the final top-K (round-robin). Without this, a
+ * 12-chunk PDF permanently outranks a 4-chunk PDF on generic queries and the
+ * small file is never cited. Single-material projects are unaffected.
+ * A user-named material (filename match) goes first — still threshold-filtered.
+ */
+export function balanceChunks(
+  ranked: RetrievedChunk[],
+  topK: number,
+  boostedMaterialId: string | null
+): RetrievedChunk[] {
+  if (ranked.length <= topK && !boostedMaterialId) return ranked;
+  const byMaterial = new Map<string, RetrievedChunk[]>();
+  for (const c of ranked) {
+    const list = byMaterial.get(c.material_id) ?? [];
+    list.push(c);
+    byMaterial.set(c.material_id, list);
+  }
+  const orderedKeys = [...byMaterial.keys()].sort((a, b) => {
+    if (a === boostedMaterialId) return -1;
+    if (b === boostedMaterialId) return 1;
+    // Otherwise keep global similarity order: compare each group's best chunk
+    return (byMaterial.get(b)?.[0]?.similarity ?? 0) - (byMaterial.get(a)?.[0]?.similarity ?? 0);
+  });
+  const out: RetrievedChunk[] = [];
+  let round = 0;
+  for (;;) {
+    let added = false;
+    for (const key of orderedKeys) {
+      const list = byMaterial.get(key);
+      if (list && round < list.length && out.length < topK) {
+        out.push(list[round]);
+        added = true;
+      }
+    }
+    if (!added || out.length >= topK) break;
+    round++;
+  }
+  return out;
+}
+
+/**
  * Project-scoped retrieval.
  * - Validates project ownership (WHERE id = projectId AND user_id = userId)
- * - Embeds query via AIService (Groq nomic-embed-text-v1.5, 768 dims)
+ * - Embeds query via AIService (local bge-small-en-v1.5, 384 dims)
  * - Runs pgvector cosine similarity search filtered by project_id
+ * - Balances chunks across materials (round-robin) + boosts a user-named file
  * - Returns top-K above threshold, or insufficient_evidence if none qualify
  */
 export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult> {
@@ -134,14 +209,28 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
     }
   }
 
-  // 3. pgvector cosine-similarity search via RPC
-  // RPC: match_chunks(query_embedding vector(768), match_project_id uuid, match_threshold float, match_count int)
+  // 3. READY materials: used to size over-fetching and to detect a
+  // user-named file ("what is in questions5a pdf" ~ Session5a_qa.pdf).
+  // Ownership already validated above; scoped by project_id + user_id.
+  const { data: readyMats } = await db
+    .from("materials")
+    .select("id, filename")
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .eq("status", "READY");
+  const readyList = (readyMats ?? []) as Array<{ id: string; filename: string }>;
+  const boostedMaterialId = matchMaterialByName(query.trim(), readyList);
+  // Over-fetch so every material has candidates to balance across.
+  const overFetch = Math.min(Math.max(topK * Math.max(readyList.length, 1), topK), 100);
+
+  // 4. pgvector cosine-similarity search via RPC
+  // RPC: match_chunks(query_embedding vector(384), match_project_id uuid, match_threshold float, match_count int)
   // Returns rows with similarity = 1 - (embedding <=> query_embedding)
   const { data, error } = await db.rpc("match_chunks", {
     query_embedding: queryEmbedding as unknown as string,
     match_project_id: projectId,
     match_threshold: threshold,
-    match_count: topK,
+    match_count: overFetch,
   });
 
   if (error) {
@@ -149,18 +238,20 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
     // For robustness, attempt client-side fallback by fetching chunks and computing similarity in JS
     // (only for small datasets; not for production scale but ensures dev works before migration)
     console.error("match_chunks RPC failed, attempting fallback:", error.message);
-    return await fallbackRetrieve(db, projectId, queryEmbedding, topK, threshold);
+    return await fallbackRetrieve(db, projectId, queryEmbedding, topK, threshold, boostedMaterialId);
   }
 
-  const chunks = (data ?? []) as RetrievedChunk[];
+  const ranked = (data ?? []) as RetrievedChunk[];
 
-  if (chunks.length === 0) {
+  if (ranked.length === 0) {
     return {
       status: "insufficient_evidence",
       chunks: [],
       reason: "No chunks above relevance threshold for this project/query",
     };
   }
+
+  const chunks = balanceChunks(ranked, topK, boostedMaterialId);
 
   return { status: "success", chunks };
 }
@@ -176,7 +267,8 @@ async function fallbackRetrieve(
   projectId: string,
   queryEmbedding: number[],
   topK: number,
-  threshold: number
+  threshold: number,
+  boostedMaterialId: string | null = null
 ): Promise<RetrieveResult> {
   const { data: rows, error } = await db
     .from("chunks")
@@ -196,7 +288,7 @@ async function fallbackRetrieve(
     };
   }
 
-  const scored: RetrievedChunk[] = rows
+  const ranked: RetrievedChunk[] = rows
     .map((row: { id: string; material_id: string; project_id: string; content: string; page_number: number; chunk_index: number; embedding: number[] | string; metadata: Record<string, unknown> | null }) => {
       // embedding may come back as string "[0.1,0.2]" from pgvector
       let emb: number[];
@@ -225,16 +317,17 @@ async function fallbackRetrieve(
     })
     .filter((x: RetrievedChunk | null): x is RetrievedChunk => x !== null)
     .filter((c: RetrievedChunk) => c.similarity > threshold)
-    .sort((a: RetrievedChunk, b: RetrievedChunk) => b.similarity - a.similarity)
-    .slice(0, topK);
+    .sort((a: RetrievedChunk, b: RetrievedChunk) => b.similarity - a.similarity);
 
-  if (scored.length === 0) {
+  if (ranked.length === 0) {
     return {
       status: "insufficient_evidence",
       chunks: [],
       reason: "No chunks above relevance threshold for this project/query",
     };
   }
+
+  const scored = balanceChunks(ranked, topK, boostedMaterialId);
 
   return { status: "success", chunks: scored };
 }

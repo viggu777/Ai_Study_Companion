@@ -59,7 +59,7 @@ export default async function MasteryPage({ params }: { params: Promise<{ projec
               </div>
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100">
                 <div
-                  className="h-full rounded-full bg-emerald-700 transition-all"
+                  className="h-full rounded-full bg-sky-600 transition-all"
                   style={{ width: `${Math.max(0, Math.min(100, g.currentScore ?? 0))}%` }}
                 />
               </div>
@@ -72,7 +72,7 @@ export default async function MasteryPage({ params }: { params: Promise<{ projec
       )}
 
       <p className="mt-6 text-xs text-stone-400">
-        <Link href={`/projects/${projectId}/growth`} className="text-emerald-700 hover:text-emerald-700">View growth trends →</Link>
+        <Link href={`/projects/${projectId}/growth`} className="text-stone-800 hover:text-stone-800">View growth trends →</Link>
       </p>
     </div>
   );

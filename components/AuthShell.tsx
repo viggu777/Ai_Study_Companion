@@ -28,16 +28,16 @@ export default function AuthShell({
   return (
     <main className="page-enter flex min-h-screen bg-stone-100">
       {/* Brand panel */}
-      <div className="relative hidden w-[44%] shrink-0 overflow-hidden bg-emerald-950 lg:block">
+      <div className="relative hidden w-[44%] shrink-0 overflow-hidden bg-sky-600 lg:block">
         <div
           aria-hidden
-          className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(52,211,153,0.22),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(20,184,166,0.16),transparent_55%)]"
+          className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(255,255,255,0.22),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(12,74,110,0.35),transparent_55%)]"
         />
         <div className="relative flex h-full flex-col justify-between p-10">
           <div className="flex items-center gap-2.5">
             <span
               aria-hidden
-              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-emerald-400 to-emerald-700 text-base font-bold text-white"
+              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-white/20 text-base font-bold text-white"
             >
               A
             </span>
@@ -53,19 +53,19 @@ export default function AuthShell({
             <ul className="mt-8 space-y-5">
               {highlights.map((h) => (
                 <li key={h.title} className="flex items-start gap-3.5">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/10 text-emerald-200">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white">
                     <h.icon className="h-[18px] w-[18px]" />
                   </span>
                   <span>
                     <span className="block text-sm font-semibold text-white">{h.title}</span>
-                    <span className="block text-sm text-emerald-100/65">{h.text}</span>
+                    <span className="block text-sm text-white/70">{h.text}</span>
                   </span>
                 </li>
               ))}
             </ul>
           </div>
 
-          <p className="text-xs text-emerald-100/45">
+          <p className="text-xs text-white/60">
             Material → Tutor → Assessment → Mastery → Recommendation
           </p>
         </div>
@@ -77,7 +77,7 @@ export default function AuthShell({
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
             <span
               aria-hidden
-              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-gradient-to-br from-emerald-400 to-emerald-700 text-base font-bold text-white"
+              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-sky-600 text-base font-bold text-white"
             >
               A
             </span>
@@ -88,7 +88,7 @@ export default function AuthShell({
           <h1 className="text-[26px] font-semibold tracking-tight text-stone-900">{title}</h1>
           <p className="mt-1.5 text-sm text-stone-500">
             {subtitle}{" "}
-            <a href={switchHref} className="font-medium text-emerald-700 hover:text-emerald-800">
+            <a href={switchHref} className="font-medium text-stone-800 hover:text-stone-900">
               {switchLabel}
             </a>
           </p>

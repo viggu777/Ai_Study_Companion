@@ -90,7 +90,7 @@ export default async function AdminActivityPage({
           </div>
         </div>
         <div className="flex gap-2">
-          <button type="submit" className="px-4 py-1.5 bg-emerald-700 text-white rounded-md text-sm font-medium hover:bg-emerald-800">
+          <button type="submit" className="px-4 py-1.5 bg-sky-600 text-white rounded-md text-sm font-medium hover:bg-sky-700">
             Apply filters
           </button>
           <a href="/admin/activity" className="px-4 py-1.5 bg-stone-100 text-stone-700 rounded-md text-sm hover:bg-stone-200">

@@ -45,7 +45,7 @@ export default async function AdminProjectsPage({
             className="w-full rounded-md border border-stone-300 px-3 py-1.5 text-sm font-mono"
           />
         </div>
-        <button type="submit" className="px-4 py-1.5 bg-emerald-700 text-white rounded-md text-sm font-medium hover:bg-emerald-800">
+        <button type="submit" className="px-4 py-1.5 bg-sky-600 text-white rounded-md text-sm font-medium hover:bg-sky-700">
           Filter
         </button>
         {(q || userId) && (

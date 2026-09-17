@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { listProjects, createProject } from "@/services/project.service";
 
 export async function GET(
@@ -6,10 +7,12 @@ export async function GET(
   { params }: { params: Promise<{ spaceId: string }> }
 ) {
   try {
+    await requireUserId();
     const { spaceId } = await params;
     const projects = await listProjects(spaceId);
     return NextResponse.json(projects);
-  } catch {
+  } catch (e) {
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: "Failed to list projects" }, { status: 500 });
   }
 }
@@ -19,6 +22,7 @@ export async function POST(
   { params }: { params: Promise<{ spaceId: string }> }
 ) {
   try {
+    await requireUserId();
     const { spaceId } = await params;
     const { name, description, learning_goal } = await request.json();
     if (!name || name.trim() === "") {
@@ -31,7 +35,8 @@ export async function POST(
       learning_goal?.trim()
     );
     return NextResponse.json(project, { status: 201 });
-  } catch {
+  } catch (e) {
+    if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     return NextResponse.json({ error: "Failed to create project" }, { status: 500 });
   }
 }

@@ -33,7 +33,7 @@ ROLE: Generate grounded, concept-aligned quiz questions for a single Project. Ea
 
 CONSTRAINTS:
 - You will be given a list of concepts, each with: concept_id, name, description, target difficulty (easy|medium|hard), target type (MCQ|OPEN_ENDED). You must generate exactly one question per concept, matching its target difficulty and type. Do not add or omit concepts.
-- MCQ: provide exactly 4 options (strings), one correct_answer that exactly matches one of the options, and a concise explanation of why that answer is correct.
+- MCQ: provide exactly 4 options (strings), one correct_answer that exactly matches one of the options, and a concise explanation of why that answer is correct. Vary the position of the correct answer across questions (not always first) — options are shuffled server-side anyway.
 - OPEN_ENDED: set options to null, provide correct_answer as a short reference answer (1-3 sentences), and explanation describing what a good answer should contain.
 - Difficulty meaning: easy = recall/definition, medium = application/inference combining ideas, hard = analysis/evaluation or multi-step reasoning.
 - Do not repeat verbatim questions that already appeared in this Project — vary wording and focus even when testing the same concept.

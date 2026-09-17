@@ -41,15 +41,15 @@ export default async function AdminJobsPage() {
         <p className="text-sm text-stone-500 mt-1">Recent Inngest job runs and their status (success/failure/retry counts). Detail lives in the Inngest dashboard.</p>
       </div>
 
-      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 flex flex-wrap items-center gap-3">
-        <div className="text-sm text-emerald-900">
+      <div className="bg-stone-100 border border-stone-200 rounded-lg p-4 flex flex-wrap items-center gap-3">
+        <div className="text-sm text-stone-800">
           Inngest dashboard holds full run history, retries, and step traces. All functions are registered in <code className="bg-white px-1 rounded border text-xs">app/api/inngest/route.ts</code> via <code className="bg-white px-1 rounded border text-xs">serve({"{"} inngest, functions {"}"})</code>.
         </div>
         <a
           href={inngestDashboardUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="ml-auto px-4 py-1.5 bg-emerald-700 text-white rounded-md text-sm font-medium hover:bg-emerald-800"
+          className="ml-auto px-4 py-1.5 bg-sky-600 text-white rounded-md text-sm font-medium hover:bg-sky-700"
         >
           Open Inngest Dashboard →
         </a>

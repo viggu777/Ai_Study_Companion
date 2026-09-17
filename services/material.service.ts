@@ -3,7 +3,7 @@ import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
 import { inngest } from "@/lib/jobs/client";
 import { buildStoragePath, downloadPdf, uploadPdf } from "@/lib/storage/materialStorage";
 import { chunkPlainText } from "@/lib/rag/chunker";
-import { aiService, CHAT_MODEL_NAME, EMBEDDING_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -214,6 +214,33 @@ export async function retryMaterial(materialId: string) {
   return { id: materialId, status: "QUEUED" as const };
 }
 
+export async function deleteMaterial(materialId: string) {
+  const userId = await getCurrentUserId();
+  const db = await getDb();
+  const { data: mat, error } = await db
+    .from("materials")
+    .select("id, storage_path")
+    .eq("id", materialId)
+    .eq("user_id", userId)
+    .single();
+  if (error || !mat) throw new Error("Material not found");
+
+  // Remove the stored object best-effort (missing objects are fine —
+  // e.g. rows whose upload never succeeded), then delete the row.
+  // Chunks cascade-delete via FK; concepts keep SET NULL source.
+  const { deletePdf } = await import("@/lib/storage/materialStorage");
+  if (mat.storage_path && mat.storage_path !== "pending") {
+    await deletePdf(mat.storage_path);
+  }
+  const { error: delErr } = await db
+    .from("materials")
+    .delete()
+    .eq("id", materialId)
+    .eq("user_id", userId);
+  if (delErr) throw new Error(delErr.message);
+  return { id: materialId };
+}
+
 /**
  * Background processing — steps per architecture:
  * 1. PROCESSING, 2. Extract text (preserve pages), 3. Chunk, 4. Embed, 5. Extract concepts, 6. READY, 7. FAILED on error
@@ -225,7 +252,7 @@ export async function processMaterial(materialId: string) {
   // Fetch material (needs user_id to preserve ownership context for background job)
   const { data: material, error: matErr } = await db
     .from("materials")
-    .select("id, project_id, user_id, storage_path, filename")
+    .select("id, project_id, user_id, storage_path, filename, status")
     .eq("id", materialId)
     .single();
   if (matErr || !material) throw new Error(`Material not found: ${materialId}`);
@@ -310,12 +337,19 @@ export async function processMaterial(materialId: string) {
     }
     if (embeddings.length !== chunks.length) throw new Error("Embedding count mismatch");
 
-    // Verify dimension matches schema (768)
-    if (embeddings[0]?.length !== 768) {
-      console.warn(`Unexpected embedding dimension ${embeddings[0]?.length}, expected 768`);
+    // Verify dimension matches schema (bge-small 384; AIService already
+    // throws on mismatch — this is a second, explicit gate before insert).
+    if (embeddings[0]?.length !== EMBEDDING_DIM) {
+      throw new Error(
+        `Embedding dimension ${embeddings[0]?.length} does not match schema (${EMBEDDING_DIM}). ` +
+          `Run db/schema/004_embeddings_384.sql and use one embedding model at a time.`
+      );
     }
 
     // 4b. Store chunks with embeddings
+    // Retry safety: remove stale chunks from a previous failed attempt so a
+    // retry never duplicates content.
+    await db.from("chunks").delete().eq("material_id", materialId);
     const rows = chunks.map((c, idx) => ({
       material_id: materialId,
       project_id: projectId,
@@ -440,10 +474,16 @@ export async function processMaterial(materialId: string) {
 }
 
 async function extractPdfText(buffer: Buffer): Promise<{ text: string; numPages: number }> {
-  // pdf-parse is CommonJS; dynamic import with fallback handling
+  // pdf-parse's package entry (index.js) runs a debug block on ESM import
+  // (`!module.parent` is true under ESM) that reads ./test/data/*.pdf and
+  // throws ENOENT. Import the inner lib file directly to avoid it.
+  // Verified: import('pdf-parse') -> ENOENT, import('pdf-parse/lib/pdf-parse.js') -> ok.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfParse = require("pdf-parse") as (data: Buffer) => Promise<{ text: string; numpages: number }>;
+    const mod = (await import("pdf-parse/lib/pdf-parse.js")) as unknown as
+      | { default: (data: Buffer) => Promise<{ text: string; numpages: number }> }
+      | ((data: Buffer) => Promise<{ text: string; numpages: number }>);
+    const pdfParse =
+      typeof mod === "function" ? mod : mod.default;
     const data = await pdfParse(buffer);
     return { text: data.text ?? "", numPages: data.numpages ?? 1 };
   } catch (e) {

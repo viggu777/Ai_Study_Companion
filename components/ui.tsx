@@ -12,9 +12,9 @@ type ButtonSize = "sm" | "md" | "lg";
 
 const buttonStyles: Record<ButtonVariant, string> = {
   primary:
-    "bg-emerald-700 text-white shadow-card hover:bg-emerald-800 focus-visible:outline-emerald-600 disabled:bg-emerald-700/60",
+    "bg-sky-600 text-white shadow-card hover:bg-sky-700 focus-visible:outline-sky-600 disabled:bg-sky-600/60",
   secondary:
-    "bg-white text-stone-700 border border-stone-300 shadow-card hover:bg-stone-50 hover:border-stone-400 focus-visible:outline-emerald-600",
+    "bg-white text-stone-700 border border-stone-300 shadow-card hover:bg-stone-50 hover:border-stone-400 focus-visible:outline-sky-600",
   ghost: "text-stone-600 hover:bg-stone-200/60 hover:text-stone-900",
   danger: "bg-white text-red-700 border border-red-200 shadow-card hover:bg-red-50",
 };
@@ -89,10 +89,10 @@ type BadgeTone = "neutral" | "success" | "warning" | "danger" | "accent";
 
 const badgeTones: Record<BadgeTone, string> = {
   neutral: "bg-stone-100 text-stone-700",
-  success: "bg-emerald-50 text-emerald-800 ring-1 ring-inset ring-emerald-600/20",
+  success: "bg-sky-600 text-white",
   warning: "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-600/25",
   danger: "bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20",
-  accent: "bg-teal-50 text-teal-800 ring-1 ring-inset ring-teal-600/20",
+  accent: "bg-stone-100 text-stone-800 ring-1 ring-inset ring-sky-600/10",
 };
 
 export function Badge({ tone = "neutral", className, children }: { tone?: BadgeTone; className?: string; children: ReactNode }) {
@@ -155,7 +155,7 @@ export function Stat({
           {sub && <p className="mt-1.5 text-xs text-stone-400">{sub}</p>}
         </div>
         {icon && (
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-700/[0.08] text-emerald-800">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-50 text-sky-700">
             {icon}
           </span>
         )}
@@ -185,7 +185,7 @@ export function Field({
 }
 
 export const inputClass =
-  "block w-full rounded-lg border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 shadow-card placeholder:text-stone-400 focus:border-emerald-600 focus:ring-emerald-600 disabled:bg-stone-50 disabled:text-stone-400";
+  "block w-full rounded-lg border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 shadow-card placeholder:text-stone-400 focus:border-sky-600 focus:ring-sky-600 disabled:bg-stone-50 disabled:text-stone-400";
 
 export function Alert({ children }: { children: ReactNode }) {
   return (
@@ -211,7 +211,7 @@ export function EmptyState({
   return (
     <Card className="px-6 py-12 text-center">
       {icon && (
-        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-700/[0.08] text-emerald-800">
+        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-sky-50 text-sky-700">
           {icon}
         </div>
       )}

@@ -66,6 +66,7 @@ CITATION RULES:
 - Every factual claim must cite at least one chunk from the evidence (use its materialId, materialName, page, chunkId).
 - If the evidence does not contain enough information to answer, set grounded=false, confidence=low, and explain the gap honestly.
 - Prefer citing the most relevant chunk(s); you may cite multiple if combining concepts.
+- FILE-INVENTORY QUESTIONS ("do you have X pdf?", "list my files", "what is in <filename>"): answer from the "Available materials" list in the learning context — e.g. confirm the file is uploaded with its page count and status, then summarize what its retrieved chunks say. For these, set grounded=true even with few/no chunk citations when you are only reporting the inventory list; the list itself is system-provided fact, not model memory. If a named file is NOT in the list, say so plainly with grounded=false.
 
 OUTPUT FORMAT:
 - You must respond with valid JSON only, no markdown, no extra text.

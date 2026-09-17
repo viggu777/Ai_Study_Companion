@@ -62,13 +62,13 @@ export default async function ProjectPage({
       />
 
       {dashboardRecs.length > 0 && (
-        <Card className="mb-6 border-emerald-700/20 bg-emerald-50/50 p-5">
+        <Card className="mb-6 border-sky-600/10 bg-stone-100/50 p-5">
           <div className="flex items-center gap-2">
-            <SparkIcon className="h-4 w-4 text-emerald-800" />
+            <SparkIcon className="h-4 w-4 text-stone-800" />
             <h2 className="text-sm font-semibold text-stone-900">Active recommendations</h2>
             <a
               href={`/projects/${projectId}/recommendations`}
-              className="ml-auto text-xs font-medium text-emerald-700 hover:text-emerald-800"
+              className="ml-auto text-xs font-medium text-stone-800 hover:text-stone-900"
             >
               View all →
             </a>
@@ -76,7 +76,7 @@ export default async function ProjectPage({
           <ul className="mt-3 space-y-2">
             {dashboardRecs.map((r) => (
               <li key={r.id} className="flex items-start gap-2 text-sm">
-                <span aria-hidden className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-700" />
+                <span aria-hidden className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-sky-600" />
                 <span className="text-stone-700">{r.title}</span>
               </li>
             ))}
@@ -92,10 +92,10 @@ export default async function ProjectPage({
             className="group rounded-xl border border-stone-200 bg-white p-5 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-hover"
           >
             <div className="flex items-start justify-between">
-              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-700/[0.08] text-emerald-800">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-sky-50 text-sky-700">
                 <item.icon className="h-[18px] w-[18px]" />
               </span>
-              <ArrowRightIcon className="h-4 w-4 text-stone-300 transition-all group-hover:translate-x-0.5 group-hover:text-emerald-700" />
+              <ArrowRightIcon className="h-4 w-4 text-stone-300 transition-all group-hover:translate-x-0.5 group-hover:text-stone-800" />
             </div>
             <h3 className="mt-3 font-semibold tracking-tight text-stone-900">{item.label}</h3>
             <p className="mt-1 text-sm text-stone-500">{item.text}</p>

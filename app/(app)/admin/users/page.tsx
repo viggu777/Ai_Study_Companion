@@ -53,7 +53,7 @@ export default async function AdminUsersPage() {
                     <td className="px-4 py-2 text-stone-700">{u.projectCount}</td>
                     <td className="px-4 py-2 text-stone-700">{u.quizCount}</td>
                     <td className="px-4 py-2 text-right">
-                      <Link href={`/admin/users/${u.id}`} className="text-emerald-700 hover:text-emerald-800 font-medium">
+                      <Link href={`/admin/users/${u.id}`} className="text-stone-800 hover:text-stone-900 font-medium">
                         Drill-down →
                       </Link>
                     </td>

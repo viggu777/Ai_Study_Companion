@@ -38,7 +38,7 @@ export default async function GrowthPage({ params }: { params: Promise<{ project
           <span className="px-2 py-1 rounded bg-red-50 text-red-700">Requires attention: {needs}</span>
           <span className="ml-auto text-stone-500">{growth.length} concepts</span>
           {growth.length > 0 && (
-            <Link href={`/projects/${projectId}/recommendations`} className="text-emerald-700 hover:text-emerald-800 text-xs">
+            <Link href={`/projects/${projectId}/recommendations`} className="text-stone-800 hover:text-stone-900 text-xs">
               View recommendations →
             </Link>
           )}
