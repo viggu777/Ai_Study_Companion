@@ -8,11 +8,14 @@ import { CHAT_MODEL_NAME } from "./AIService";
 
 export type AiFeature =
   | "TUTOR"
+  | "CONVERSATION_SUMMARY"
   | "EMBEDDING"
   | "QUIZ_GENERATION"
   | "OPEN_ENDED_EVALUATION"
   | "CONCEPT_EXTRACTION"
-  | "RECOMMENDATION";
+  | "RECOMMENDATION"
+  | "FLASHCARD_GENERATION"
+  | "SUBCONCEPT_GENERATION";
 
 export async function logAiOperation(params: {
   userId: string;

@@ -29,9 +29,18 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
+  // Fast path: `getSession()` only decodes the session cookie — no network
+  // round-trip to the Supabase Auth server. `getUser()` re-validates against
+  // the Auth server on EVERY request (including every client-side RSC
+  // navigation), which was adding ~200-600ms to each page transition.
+  // Strong validation still happens per-request in Server Components via the
+  // cached `getCurrentUser()` (lib/auth/getCurrentUser.ts), and row-level
+  // security enforces ownership at the DB layer, so gating redirects on the
+  // cookie session here is safe.
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
 
   const isAppRoute = request.nextUrl.pathname.startsWith("/dashboard") ||
     request.nextUrl.pathname.startsWith("/spaces") ||

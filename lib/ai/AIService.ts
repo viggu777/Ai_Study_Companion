@@ -52,6 +52,26 @@ const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const GROQ_EMBEDDING_MODEL = "nomic-embed-text-v1.5";
 const GROQ_EMBEDDING_DIM = 768;
 
+// Request timeouts — a hung provider must fail fast with an actionable
+// message instead of hanging the UI until the platform kills the request.
+const CHAT_TIMEOUT_MS = 90_000;
+const EMBEDDING_TIMEOUT_MS = 60_000;
+
+/**
+ * Map low-level provider errors (timeouts, connection failures) to
+ * user-friendly messages. Pass-through for anything already actionable.
+ */
+export function friendlyAiErrorMessage(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/timed out|timeout|ETIMEDOUT|APIConnectionTimeout/i.test(msg)) {
+    return "AI request timed out — the provider took too long to respond. Please try again.";
+  }
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|network|socket hang up/i.test(msg)) {
+    return "Could not reach the AI provider — check your connection and try again.";
+  }
+  return msg;
+}
+
 const EMBEDDING_DIMENSION = EMBEDDING_PROVIDER === "groq" ? GROQ_EMBEDDING_DIM : LOCAL_EMBED_DIM;
 
 /**
@@ -95,7 +115,7 @@ function getChatClient(): ChatClient {
   const mercuryKey = getMercuryApiKey();
   if (mercuryKey) {
     return {
-      client: new OpenAI({ apiKey: mercuryKey, baseURL: MERCURY_BASE_URL }),
+      client: new OpenAI({ apiKey: mercuryKey, baseURL: MERCURY_BASE_URL, timeout: CHAT_TIMEOUT_MS }),
       model: MERCURY_CHAT_MODEL,
       useMaxCompletionTokens: true,
       label: `Mercury/${MERCURY_CHAT_MODEL}`,
@@ -108,7 +128,7 @@ function getChatClient(): ChatClient {
     );
   }
   return {
-    client: new OpenAI({ apiKey: metaKey, baseURL: META_BASE_URL }),
+    client: new OpenAI({ apiKey: metaKey, baseURL: META_BASE_URL, timeout: CHAT_TIMEOUT_MS }),
     model: META_CHAT_MODEL,
     useMaxCompletionTokens: false,
     label: `Meta/${META_CHAT_MODEL}`,
@@ -123,11 +143,12 @@ function getGroqClient(): OpenAI {
   return new OpenAI({
     apiKey,
     baseURL: GROQ_BASE_URL,
+    timeout: EMBEDDING_TIMEOUT_MS,
   });
 }
 
 function getLocalEmbedClient(): OpenAI {
-  return new OpenAI({ apiKey: LOCAL_EMBED_API_KEY, baseURL: LOCAL_EMBED_BASE_URL });
+  return new OpenAI({ apiKey: LOCAL_EMBED_API_KEY, baseURL: LOCAL_EMBED_BASE_URL, timeout: EMBEDDING_TIMEOUT_MS });
 }
 
 export function getActiveEmbeddingInfo(): { provider: string; model: string; dimension: number } {
@@ -188,16 +209,21 @@ function validateStructuredOutput<T>(data: unknown, schema: Record<string, unkno
 export const aiService: AIService = {
   async generateText({ systemPrompt, userPrompt, temperature = 0.7, maxTokens = 2000 }: GenerateTextOptions) {
     const { client, model, useMaxCompletionTokens } = getChatClient();
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      // Mercury: medium (default) reasoning effort, clamped temp, budget headroom.
-      temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-      ...(useMaxCompletionTokens ? { max_completion_tokens: mercuryBudget(maxTokens) } : { max_tokens: maxTokens }),
-    });
+    let completion;
+    try {
+      completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        // Mercury: medium (default) reasoning effort, clamped temp, budget headroom.
+        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
+        ...(useMaxCompletionTokens ? { max_completion_tokens: mercuryBudget(maxTokens) } : { max_tokens: maxTokens }),
+      });
+    } catch (e) {
+      throw new Error(friendlyAiErrorMessage(e));
+    }
     const content = completion.choices[0]?.message?.content ?? "";
     if (!content) {
       throw new Error(
@@ -215,20 +241,25 @@ export const aiService: AIService = {
     maxTokens = 2000,
   }: GenerateStructuredOptions<T>) {
     const { client, model, useMaxCompletionTokens } = getChatClient();
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-      ...(useMaxCompletionTokens
-        ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
-        : { max_tokens: maxTokens }),
-      // JSON mode (Mercury + Llama API both support it); keep server-side
-      // validation as second layer regardless.
-      response_format: { type: "json_object" },
-    });
+    let completion;
+    try {
+      completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
+        ...(useMaxCompletionTokens
+          ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
+          : { max_tokens: maxTokens }),
+        // JSON mode (Mercury + Llama API both support it); keep server-side
+        // validation as second layer regardless.
+        response_format: { type: "json_object" },
+      });
+    } catch (e) {
+      throw new Error(friendlyAiErrorMessage(e));
+    }
     const content = completion.choices[0]?.message?.content ?? "{}";
     let parsed: unknown;
     try {
@@ -265,7 +296,7 @@ export const aiService: AIService = {
           `Local embeddings service unreachable at ${LOCAL_EMBED_BASE_URL} — start it with: cd embeddings && docker compose up -d --build. Original: ${msg}`
         );
       }
-      throw e;
+      throw new Error(friendlyAiErrorMessage(e));
     }
     const vectors = response.data.map((d) => d.embedding);
     // Guard against model/DB dimension drift — a wrong-size vector would fail
@@ -281,17 +312,22 @@ export const aiService: AIService = {
 
   async evaluate({ systemPrompt, userPrompt, temperature = 0.1, maxTokens = 1500 }: EvaluateOptions) {
     const { client, model, useMaxCompletionTokens } = getChatClient();
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-      ...(useMaxCompletionTokens
-        ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
-        : { max_tokens: maxTokens }),
-    });
+    let completion;
+    try {
+      completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
+        ...(useMaxCompletionTokens
+          ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
+          : { max_tokens: maxTokens }),
+      });
+    } catch (e) {
+      throw new Error(friendlyAiErrorMessage(e));
+    }
     return completion.choices[0]?.message?.content ?? "";
   },
 };
