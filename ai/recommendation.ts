@@ -44,8 +44,11 @@ export function buildRecommendationUserPrompt(params: {
   masterySnapshot: Array<{ conceptName: string; masteryScore: number; trend: string }>;
   recentActivity: Array<{ eventType: string; createdAt: string; metadata?: unknown }>;
   materialsContext: Array<{ conceptName: string; materialName: string | null; materialId: string | null; pages?: string | null }>;
+  practiceContext?: Array<{ conceptName: string; detail: string }>;
+  misconceptionContext?: Array<{ conceptName: string; description: string; occurrences: number }>;
+  prerequisiteNotes?: string[];
 }): string {
-  const { projectName, learningGoal, weakConcepts, recentMistakes, masterySnapshot, recentActivity, materialsContext } = params;
+  const { projectName, learningGoal, weakConcepts, recentMistakes, masterySnapshot, recentActivity, materialsContext, practiceContext, misconceptionContext, prerequisiteNotes } = params;
 
   const weakBlock =
     weakConcepts.length === 0
@@ -79,6 +82,21 @@ export function buildRecommendationUserPrompt(params: {
           )
           .join("\n");
 
+  const practiceBlock =
+    !practiceContext || practiceContext.length === 0
+      ? ""
+      : `\nPRACTICE EVIDENCE (deep open-ended practice — what the learner demonstrated):\n${practiceContext.map((p) => `- [${p.conceptName}] ${p.detail.slice(0, 220)}`).join("\n")}\n`;
+
+  const misconceptionBlock =
+    !misconceptionContext || misconceptionContext.length === 0
+      ? ""
+      : `\nRECURRING MISCONCEPTIONS (address these directly — repetition increases priority):\n${misconceptionContext.map((m) => `- [${m.conceptName}] "${m.description.slice(0, 160)}" (seen ${m.occurrences}x)`).join("\n")}\n`;
+
+  const prereqBlock =
+    !prerequisiteNotes || prerequisiteNotes.length === 0
+      ? ""
+      : `\nDEPENDENCY NOTES (practice the prerequisite FIRST):\n${prerequisiteNotes.map((n) => `- ${n.slice(0, 220)}`).join("\n")}\n`;
+
   return `Project: ${projectName}
 Learning goal: ${learningGoal ?? "(none set)"}
 
@@ -87,7 +105,7 @@ ${weakBlock}
 
 RECENT MISTAKES (last quiz attempts):
 ${mistakeBlock}
-
+${practiceBlock}${misconceptionBlock}${prereqBlock}
 MASTERY SNAPSHOT (all concepts):
 ${masteryBlock}
 
@@ -97,7 +115,7 @@ ${activityBlock}
 MATERIALS CONTEXT (concept → source material + page range):
 ${materialBlock}
 
-TASK: Generate ONE recommendation that is specific to the weak concepts above. Title must name the primary weak concept. Each action_item must name an actual concept (and where possible a material + page range). Do NOT produce generic advice. Return JSON only.`;
+TASK: Generate ONE recommendation that is specific to the weak concepts above. Title must name the primary weak concept. Each action_item must name an actual concept (and where possible a material + page range). Prefer: reattempt a concept, review a specific material section, practice a prerequisite first, try an application-based question, or ask the Tutor for clarification. Do NOT produce generic advice. Return JSON only.`;
 }
 
 export function validateRecommendationOutput(data: unknown): RecommendationOutput {

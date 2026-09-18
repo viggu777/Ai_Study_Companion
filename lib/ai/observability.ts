@@ -15,7 +15,9 @@ export type AiFeature =
   | "CONCEPT_EXTRACTION"
   | "RECOMMENDATION"
   | "FLASHCARD_GENERATION"
-  | "SUBCONCEPT_GENERATION";
+  | "SUBCONCEPT_GENERATION"
+  | "PRACTICE_GENERATION"
+  | "PRACTICE_EVALUATION";
 
 export async function logAiOperation(params: {
   userId: string;

@@ -3,6 +3,7 @@ import { inngest } from "@/lib/jobs/client";
 import { functions as materialFunctions } from "@/lib/jobs/material";
 import { functions as masteryFunctions } from "@/lib/jobs/mastery";
 import { functions as recommendationFunctions } from "@/lib/jobs/recommendation";
+import { functions as practiceFunctions } from "@/lib/jobs/practice";
 
 // Material processing (pdf-parse + Gemini batches + concept extraction) can
 // exceed the default serverless timeout — allow time on Vercel.
@@ -14,5 +15,6 @@ export const { GET, POST, PUT } = serve({
     ...(materialFunctions as unknown as never[]),
     ...(masteryFunctions as unknown as never[]),
     ...(recommendationFunctions as unknown as never[]),
+    ...(practiceFunctions as unknown as never[]),
   ] as unknown as Parameters<typeof serve>[0]["functions"],
 });

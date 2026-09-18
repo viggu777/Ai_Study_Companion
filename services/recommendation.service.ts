@@ -203,6 +203,93 @@ export async function generateRecommendationForProject(params: {
     trend: g.trend,
   }));
 
+  // Practice evidence: recent practice responses + misconceptions + dependency notes.
+  // Best-effort — missing tables (pre-007 migration) degrade to empty context.
+  let practiceContext: Array<{ conceptName: string; detail: string }> = [];
+  let misconceptionContext: Array<{ conceptName: string; description: string; occurrences: number }> = [];
+  let prerequisiteNotes: string[] = [];
+  try {
+    const conceptNameById = new Map<string, string>(conceptRows.map((c) => [c.id, c.name]));
+    const { data: assignments } = await db
+      .from("practice_assignments")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(3);
+    const aIds = ((assignments ?? []) as Array<{ id: string }>).map((a) => a.id);
+    if (aIds.length > 0) {
+      const { data: pqs } = await db.from("practice_questions").select("id, concept_id, intent, question").in("assignment_id", aIds);
+      const pqRows = (pqs ?? []) as Array<{ id: string; concept_id: string; intent: string; question: string }>;
+      const pqById = new Map(pqRows.map((r) => [r.id, r]));
+      const pqIds = pqRows.map((r) => r.id);
+      if (pqIds.length > 0) {
+        const { data: pres } = await db
+          .from("practice_responses")
+          .select("question_id, score, evaluation")
+          .eq("user_id", userId)
+          .in("question_id", pqIds)
+          .order("created_at", { ascending: false })
+          .limit(15);
+        for (const pr of ((pres ?? []) as Array<{ question_id: string; score: number | string | null; evaluation: unknown }>)) {
+          const pq = pqById.get(pr.question_id);
+          if (!pq) continue;
+          const cname = conceptNameById.get(pq.concept_id) ?? "Unknown";
+          const score = pr.score !== null ? Number(pr.score) : null;
+          const ev = pr.evaluation as { understanding_level?: string; reasoning_quality?: string; misconceptions?: string[] } | null;
+          const misc = ev?.misconceptions?.[0] ? ` misconception: "${String(ev.misconceptions[0]).slice(0, 100)}"` : "";
+          practiceContext.push({
+            conceptName: cname,
+            detail: `${pq.intent} "${pq.question.slice(0, 120)}" → score ${score ?? "pending"}${ev?.understanding_level ? ` (${ev.understanding_level})` : ""}${misc}`,
+          });
+          if (practiceContext.length >= 6) break;
+        }
+      }
+    }
+  } catch {
+    practiceContext = [];
+  }
+  try {
+    const { data: misc } = await db
+      .from("misconceptions")
+      .select("concept_id, description, occurrence_count")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .eq("status", "ACTIVE")
+      .order("occurrence_count", { ascending: false })
+      .limit(5);
+    const conceptNameById2 = new Map<string, string>(conceptRows.map((c) => [c.id, c.name]));
+    misconceptionContext = ((misc ?? []) as Array<{ concept_id: string; description: string; occurrence_count: number }>).map((m) => ({
+      conceptName: conceptNameById2.get(m.concept_id) ?? "Unknown",
+      description: m.description,
+      occurrences: Number(m.occurrence_count ?? 1),
+    }));
+    // Merge practice low-scores into recentMistakes so quiz-only history never hides practice struggles.
+    for (const pc of practiceContext.slice(0, 3)) {
+      const m = /score (\d+)/.exec(pc.detail);
+      const score = m ? Number(m[1]) : null;
+      if (score !== null && score < 60 && recentMistakes.length < 8) {
+        recentMistakes.push({ conceptName: pc.conceptName, question: pc.detail.slice(0, 160), score });
+      }
+    }
+  } catch {
+    misconceptionContext = [];
+  }
+  try {
+    const { data: edges } = await db.from("concept_edges").select("from_concept_id, to_concept_id, relation").eq("project_id", projectId).eq("relation", "PREREQUISITE").limit(50);
+    const prereqMasteryById = new Map<string, number>(conceptRows.map((c) => [c.id, masteryMap.get(c.id) ?? 0]));
+    const nameById = new Map(conceptRows.map((c) => [c.id, c.name]));
+    for (const e of ((edges ?? []) as Array<{ from_concept_id: string; to_concept_id: string; relation: string }>)) {
+      const weakTo = weakConcepts.find((w) => w.conceptId === e.to_concept_id);
+      if (weakTo && (prereqMasteryById.get(e.from_concept_id) ?? 0) < 60) {
+        prerequisiteNotes.push(`Practice "${nameById.get(e.from_concept_id) ?? "prerequisite"}" before "${weakTo.name}" — it unlocks ${weakTo.name}.`);
+        if (prerequisiteNotes.length >= 3) break;
+      }
+    }
+  } catch {
+    prerequisiteNotes = [];
+  }
+
   const userPrompt = buildRecommendationUserPrompt({
     projectName: project.name,
     learningGoal: project.learning_goal,
@@ -211,6 +298,9 @@ export async function generateRecommendationForProject(params: {
     masterySnapshot,
     recentActivity,
     materialsContext,
+    practiceContext,
+    misconceptionContext,
+    prerequisiteNotes,
   });
 
   const requestId = crypto.randomUUID();

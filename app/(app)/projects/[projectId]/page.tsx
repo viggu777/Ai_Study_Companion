@@ -5,7 +5,7 @@ import { listActiveRecommendations } from "@/services/recommendation.service";
 import { getGrowthAnalysis } from "@/services/growth.service";
 import { listMaterials } from "@/services/material.service";
 import { notFound } from "next/navigation";
-import { ArrowRightIcon, BookIcon, CardsIcon, ChartIcon, ChatIcon, ConceptsIcon, QuizIcon, SparkIcon, TargetIcon, TrendUpIcon } from "@/components/icons";
+import { ArrowRightIcon, BookIcon, CardsIcon, ChartIcon, ChatIcon, ConceptsIcon, PracticeIcon, QuizIcon, SparkIcon, TargetIcon, TrendUpIcon } from "@/components/icons";
 import { Badge, Card } from "@/components/ui";
 import RecommendedNextAction, { type RecommendedConcept } from "@/components/RecommendedNextAction";
 
@@ -14,7 +14,8 @@ const features = [
   { href: "tutor", label: "Tutor", text: "Ask questions about your materials", icon: ChatIcon },
   { href: "flashcards", label: "Flashcards", text: "Review weakest concepts as flip-cards", icon: CardsIcon },
   { href: "concepts", label: "Concepts", text: "Browse concepts and sub-concepts", icon: ConceptsIcon },
-  { href: "quiz", label: "Quiz", text: "Test yourself with adaptive quizzes", icon: QuizIcon },
+  { href: "quiz", label: "Quiz", text: "Fast assessment — get the answer right", icon: QuizIcon },
+  { href: "practice", label: "Practice", text: "Deep learning — show what you understand", icon: PracticeIcon },
   { href: "mastery", label: "Mastery", text: "Track concept mastery over time", icon: TargetIcon },
   { href: "growth", label: "Growth", text: "View learning growth analysis", icon: TrendUpIcon },
   { href: "analytics", label: "Analytics", text: "View project analytics", icon: ChartIcon },
@@ -72,7 +73,7 @@ export default async function ProjectPage({
     .slice(0, 3);
   const improvingCount = growth.filter((g) => g.trend === "IMPROVING").length;
 
-  // Ordered learning loop: Material → Tutor → Quiz → Mastery → Growth → Recommendation.
+  // Ordered learning loop: Material → Tutor → Quiz → Practice → Mastery → Growth → Recommendation.
   const loopSteps = [
     {
       n: 1,
@@ -89,21 +90,22 @@ export default async function ProjectPage({
               : `${readyCount} ready`,
     },
     { n: 2, href: "tutor", label: "Tutor", stage: "Learn", status: "Grounded answers + citations" },
-    { n: 3, href: "quiz", label: "Quiz", stage: "Assess", status: "Adaptive · weakest first" },
+    { n: 3, href: "quiz", label: "Quiz", stage: "Assess", status: "Fast check · weakest first" },
+    { n: 4, href: "practice", label: "Practice", stage: "Deepen", status: "Explain · evidence first" },
     {
-      n: 4,
+      n: 5,
       href: "mastery",
       label: "Mastery",
       stage: "Measure",
       status:
         growth.length === 0
-          ? "Take a quiz to measure"
+          ? "Quiz or practice to measure"
           : weakConcepts.length > 0
             ? `${weakConcepts.length} need${weakConcepts.length === 1 ? "s" : ""} attention`
             : "All concepts on track",
     },
     {
-      n: 5,
+      n: 6,
       href: "growth",
       label: "Growth",
       stage: "Track",
@@ -115,7 +117,7 @@ export default async function ProjectPage({
             : "Stable so far",
     },
     {
-      n: 6,
+      n: 7,
       href: "recommendations",
       label: "Recommendations",
       stage: "Next step",
@@ -148,7 +150,7 @@ export default async function ProjectPage({
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-stone-500">
           Your learning loop
         </h2>
-        <ol className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <ol className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
           {loopSteps.map((step) => (
             <li key={step.href}>
               <Link
@@ -214,6 +216,9 @@ export default async function ProjectPage({
                     </Link>
                     <Link href={`/projects/${projectId}/quiz`} className="text-sky-700 hover:text-sky-800">
                       Quiz
+                    </Link>
+                    <Link href={`/projects/${projectId}/practice`} className="text-sky-700 hover:text-sky-800">
+                      Practice
                     </Link>
                   </span>
                 </li>

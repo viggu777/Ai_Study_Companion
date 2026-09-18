@@ -228,3 +228,132 @@ export async function updateMasteryForQuiz(params: {
 
   return { updated, skipped };
 }
+
+/**
+ * Practice evidence — deterministic single-concept update.
+ * Same 0.7/0.3 formula as quizzes; the LLM only produced the evidence score.
+ *
+ * Evidence mapping (explainable, documented in practice.service.ts):
+ *  - primary concept: evidence = evaluation score (0-100)
+ *  - demonstrated secondary: 80 (learner showed this idea well)
+ *  - partial secondary: 50 (shaky / incomplete)
+ *  - missing secondary: min(score, 30) (absent or wrong)
+ *
+ * Idempotent per (questionId, conceptId): history reason embeds both, so a
+ * retry / double-submit never double-applies. Callers pass a stable
+ * `source` of "primary" | "demonstrated" | "partial" | "missing".
+ */
+export async function applyPracticeEvidence(params: {
+  projectId: string;
+  conceptId: string;
+  userId: string;
+  spaceId?: string | null;
+  assignmentId: string;
+  questionId: string;
+  evidenceScore: number;
+  source: "primary" | "demonstrated" | "partial" | "missing";
+}): Promise<{ previous: number; evidence: number; newScore: number; skipped: boolean }> {
+  const { projectId, conceptId, userId, assignmentId, questionId, source } = params;
+  const spaceId = params.spaceId ?? null;
+  const evidence = Math.max(0, Math.min(100, Math.round(params.evidenceScore * 100) / 100));
+  const db = getServiceDb();
+
+  // Idempotency: same question+concept already recorded?
+  try {
+    const { data: existing } = await db
+      .from("mastery_history")
+      .select("id")
+      .eq("concept_id", conceptId)
+      .eq("user_id", userId)
+      .ilike("reason", `%practice:${assignmentId}:${questionId}:${conceptId}%`)
+      .limit(1)
+      .maybeSingle();
+    if (existing) {
+      const { data: cur } = await db
+        .from("concept_mastery")
+        .select("mastery_score")
+        .eq("project_id", projectId)
+        .eq("concept_id", conceptId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      const current = cur ? Number((cur as { mastery_score: number | string }).mastery_score) : 0;
+      return { previous: current, evidence, newScore: current, skipped: true };
+    }
+  } catch {
+    // check is best-effort; proceed
+  }
+
+  const { data: masteryRow } = await db
+    .from("concept_mastery")
+    .select("id, mastery_score")
+    .eq("project_id", projectId)
+    .eq("concept_id", conceptId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  const typed = masteryRow as { id: string; mastery_score: number | string } | null;
+  const previous = typed ? Number(typed.mastery_score) : 0;
+  const newScore = computeNewMastery(previous, evidence);
+  const evidencePayload = {
+    practice_assignment_id: assignmentId,
+    practice_question_id: questionId,
+    concept_id: conceptId,
+    source,
+    previous_score: previous,
+    new_score: newScore,
+    evidence_score: evidence,
+    computed_at: new Date().toISOString(),
+  };
+
+  if (typed) {
+    const { error } = await db
+      .from("concept_mastery")
+      .update({ mastery_score: newScore, evidence: evidencePayload, updated_at: new Date().toISOString() })
+      .eq("id", typed.id);
+    if (error) throw new Error(`Failed to update mastery: ${error.message}`);
+  } else {
+    const { error } = await db.from("concept_mastery").insert({
+      project_id: projectId,
+      concept_id: conceptId,
+      user_id: userId,
+      mastery_score: newScore,
+      evidence: evidencePayload,
+    });
+    if (error) {
+      // Concurrent insert race — treat as skipped (winner holds the update).
+      const { data: raceRow } = await db
+        .from("concept_mastery")
+        .select("mastery_score")
+        .eq("project_id", projectId)
+        .eq("concept_id", conceptId)
+        .eq("user_id", userId)
+        .maybeSingle();
+      const current = raceRow ? Number((raceRow as { mastery_score: number | string }).mastery_score) : previous;
+      return { previous, evidence, newScore: current, skipped: true };
+    }
+  }
+
+  await db.from("mastery_history").insert({
+    concept_id: conceptId,
+    user_id: userId,
+    previous_score: previous,
+    new_score: newScore,
+    reason: `practice:${assignmentId}:${questionId}:${conceptId} source:${source} evidence:${evidence}`,
+  });
+
+  await emitMasteryUpdated({
+    userId,
+    spaceId,
+    projectId,
+    conceptId,
+    metadata: {
+      practice_assignment_id: assignmentId,
+      practice_question_id: questionId,
+      source,
+      previous_score: previous,
+      new_score: newScore,
+      evidence_score: evidence,
+    },
+  });
+
+  return { previous, evidence, newScore, skipped: false };
+}
