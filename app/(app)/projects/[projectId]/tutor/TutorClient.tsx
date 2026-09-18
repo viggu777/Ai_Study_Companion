@@ -31,6 +31,7 @@ import {
   clampPracticeCount,
   type PracticeLevel,
 } from "@/ai/practice";
+import { FLASHCARD_LEVEL_LABEL, type FlashcardLevel } from "@/ai/flashcards";
 
 interface Citation {
   materialId: string;
@@ -307,6 +308,8 @@ function StartDialog({
   setPracticeLevel,
   flashCount,
   setFlashCount,
+  flashLevel,
+  setFlashLevel,
   onCancel,
   onConfirm,
 }: {
@@ -319,6 +322,8 @@ function StartDialog({
   setPracticeLevel: (l: PracticeLevel) => void;
   flashCount: number;
   setFlashCount: (n: number) => void;
+  flashLevel: FlashcardLevel;
+  setFlashLevel: (l: FlashcardLevel) => void;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -327,7 +332,7 @@ function StartDialog({
       ? { title: "Start a quiz?", body: "Pick how many questions — they're chosen from your weakest concepts.", ok: "Start quiz" }
       : kind === "practice"
         ? { title: "Start practice?", body: "Pick how many questions and at which level.", ok: "Start practice" }
-        : { title: "Build flashcards?", body: "Pick how many cards — built from your weakest concepts.", ok: "Build deck" };
+        : { title: "Build flashcards?", body: "Pick how many cards and at which level — weakest concepts first, or refine on the flashcards page.", ok: "Build deck" };
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 p-4"
@@ -413,20 +418,37 @@ function StartDialog({
         )}
 
         {kind === "flashcards" && (
-          <div className="mt-4 flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of flashcards">
-            {FLASHCARD_COUNT_OPTIONS.map((n) => (
-              <button
-                key={n}
-                type="button"
-                onClick={() => setFlashCount(n)}
-                aria-pressed={flashCount === n}
-                className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
-                  flashCount === n ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
-                }`}
-              >
-                {n}
-              </button>
-            ))}
+          <div className="mt-4 space-y-2.5">
+            <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of flashcards">
+              {FLASHCARD_COUNT_OPTIONS.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setFlashCount(n)}
+                  aria-pressed={flashCount === n}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
+                    flashCount === n ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Flashcard level">
+              {(Object.keys(FLASHCARD_LEVEL_LABEL) as FlashcardLevel[]).map((lv) => (
+                <button
+                  key={lv}
+                  type="button"
+                  onClick={() => setFlashLevel(lv)}
+                  aria-pressed={flashLevel === lv}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
+                    flashLevel === lv ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
+                  }`}
+                >
+                  {FLASHCARD_LEVEL_LABEL[lv]}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -775,6 +797,7 @@ export default function TutorClient({
   const [startPracticeCount, setStartPracticeCount] = useState<number>(PRACTICE_DEFAULT_COUNT);
   const [startPracticeLevel, setStartPracticeLevel] = useState<PracticeLevel>("MIXED");
   const [startFlashCount, setStartFlashCount] = useState<number>(10);
+  const [startFlashLevel, setStartFlashLevel] = useState<FlashcardLevel>("MIXED");
 
   const openStart = useCallback((kind: StartKind) => {
     setError(null);
@@ -788,10 +811,10 @@ export default function TutorClient({
         ? `/projects/${projectId}/quiz?count=${clampQuizCount(startQuizCount)}&start=1`
         : startKind === "practice"
           ? `/projects/${projectId}/practice?count=${clampPracticeCount(startPracticeCount)}&level=${startPracticeLevel}&start=1`
-          : `/projects/${projectId}/flashcards?count=${startFlashCount}&start=1`;
+          : `/projects/${projectId}/flashcards?count=${startFlashCount}&level=${startFlashLevel}&start=1`;
     setStartKind(null);
     router.push(base);
-  }, [startKind, projectId, startQuizCount, startPracticeCount, startPracticeLevel, startFlashCount, router]);
+  }, [startKind, projectId, startQuizCount, startPracticeCount, startPracticeLevel, startFlashCount, startFlashLevel, router]);
 
   // Scroll ONLY the thread pane. (The old bottomRef.scrollIntoView() scrolled
   // every ancestor — including the outer <main> — shoving the chat upward.)
@@ -1753,6 +1776,8 @@ export default function TutorClient({
           setPracticeLevel={setStartPracticeLevel}
           flashCount={startFlashCount}
           setFlashCount={setStartFlashCount}
+          flashLevel={startFlashLevel}
+          setFlashLevel={setStartFlashLevel}
           onCancel={() => setStartKind(null)}
           onConfirm={confirmStart}
         />

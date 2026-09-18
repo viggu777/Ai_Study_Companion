@@ -3,10 +3,36 @@
  * Structured output: { cards: [{ concept_id, front, back }] }
  */
 
+export type FlashcardDifficulty = "easy" | "medium" | "hard";
+
+/** Deck level picked by the learner. MIXED = adaptive per concept (default). */
+export type FlashcardLevel = "MIXED" | "EASY" | "MEDIUM" | "HARD";
+
+export const FLASHCARD_LEVELS: FlashcardLevel[] = ["MIXED", "EASY", "MEDIUM", "HARD"];
+
+export const DEFAULT_FLASHCARD_LEVEL: FlashcardLevel = "MIXED";
+
+export const FLASHCARD_LEVEL_LABEL: Record<FlashcardLevel, string> = {
+  MIXED: "Mixed (auto)",
+  EASY: "Easy",
+  MEDIUM: "Medium",
+  HARD: "Hard",
+};
+
+/** Lenient level parse — absent/unknown falls back to adaptive MIXED. Pure. */
+export function clampFlashcardLevel(level?: unknown): FlashcardLevel {
+  if (typeof level === "string") {
+    const upper = level.toUpperCase() as FlashcardLevel;
+    if ((FLASHCARD_LEVELS as string[]).includes(upper)) return upper;
+  }
+  return DEFAULT_FLASHCARD_LEVEL;
+}
+
 export interface Flashcard {
   concept_id: string;
   front: string;
   back: string;
+  difficulty?: FlashcardDifficulty;
 }
 
 export interface FlashcardGenerationOutput {
@@ -27,24 +53,31 @@ CONSTRAINTS:
 - Back: direct answer grounded in the concept name/description (1-3 sentences, max ~400 chars). No new concepts.
 - Be precise and unambiguous. Avoid trivial true/false style.
 - Do not repeat concepts outside the list.
+- Difficulty meaning (when a target level is given): easy = recall/definition, medium = application/inference combining ideas, hard = analysis/multi-step reasoning. Set the "difficulty" field per card to the level you actually used.
 
 OUTPUT FORMAT:
 - Return valid JSON only, no markdown, no extra text.
-- Schema: { "cards": [ { "concept_id": string (must match input id), "front": string (non-empty), "back": string (non-empty) } ] }
+- Schema: { "cards": [ { "concept_id": string (must match input id), "front": string (non-empty), "back": string (non-empty), "difficulty": "easy"|"medium"|"hard" (optional, defaults to medium) } ] }
 `;
 
 export function buildFlashcardUserPrompt(params: {
   projectName: string;
   concepts: Array<{ concept_id: string; name: string; description: string | null }>;
+  level?: FlashcardLevel;
 }): string {
-  const { projectName, concepts } = params;
+  const { projectName, concepts, level } = params;
   const lines = concepts
     .map(
       (c, i) =>
         `[${i + 1}] concept_id=${c.concept_id} name="${c.name}" description="${(c.description ?? "").slice(0, 400).replace(/"/g, "'")}"`
     )
     .join("\n");
+  const levelLine =
+    level && level !== "MIXED"
+      ? `Deck level: ${level} — set EVERY card's difficulty to ${level.toLowerCase()} (learner-selected, overrides adaptivity).`
+      : `Deck level: MIXED — adapt each card's difficulty to the concept (untested/basic concepts easy, familiar ones medium/hard).`;
   return `Project: ${projectName}
+${levelLine}
 Generate exactly ${concepts.length} flashcards, one per concept below.
 
 Concepts:
@@ -71,6 +104,7 @@ export function validateFlashcardOutput(data: unknown, expectedConceptIds?: stri
     const concept_id = o.concept_id as string;
     const front = o.front as string;
     const back = o.back as string;
+    const difficultyRaw = o.difficulty as string | undefined;
     if (typeof concept_id !== "string" || !concept_id.trim()) throw new Error(`Card ${idx} invalid concept_id`);
     if (expectedConceptIds && !expectedConceptIds.includes(concept_id)) {
       throw new Error(`Card ${idx} concept_id not in requested set`);
@@ -81,7 +115,14 @@ export function validateFlashcardOutput(data: unknown, expectedConceptIds?: stri
     if (typeof back !== "string" || !back.trim() || back.trim().length > 1000) {
       throw new Error(`Card ${idx} invalid back`);
     }
-    validated.push({ concept_id, front: front.trim(), back: back.trim() });
+    let difficulty: FlashcardDifficulty | undefined;
+    if (difficultyRaw !== undefined) {
+      if (!["easy", "medium", "hard"].includes(difficultyRaw)) {
+        throw new Error(`Card ${idx} invalid difficulty`);
+      }
+      difficulty = difficultyRaw as FlashcardDifficulty;
+    }
+    validated.push({ concept_id, front: front.trim(), back: back.trim(), ...(difficulty ? { difficulty } : {}) });
   }
   return { cards: validated };
 }
