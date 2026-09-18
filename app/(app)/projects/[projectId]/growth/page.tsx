@@ -4,7 +4,7 @@ import { getGrowthAnalysis } from "@/services/growth.service";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { Alert, EmptyState, LinkButton, PageHeader } from "@/components/ui";
-import { TrendUpIcon } from "@/components/icons";
+import { QuizIcon, TrendUpIcon } from "@/components/icons";
 import GrowthClient from "./GrowthClient";
 
 export default async function GrowthPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -28,13 +28,19 @@ export default async function GrowthPage({ params }: { params: Promise<{ project
     <div className="page-enter">
       <PageHeader
         title="Growth"
-        description="How your understanding changes as you complete quizzes and practice. Compares your two most recent results per concept."
+        description="What improved, what needs attention, and what to do next. A trend compares your last two results per concept — quiz, practice, and flashcards all count."
         actions={
-          growth.length > 0 ? (
-            <LinkButton href={`/projects/${projectId}/recommendations`} variant="secondary" size="sm">
-              View recommendations
+          <>
+            <LinkButton href={`/projects/${projectId}/quiz`} variant="secondary" size="sm">
+              <QuizIcon className="h-4 w-4" />
+              Take a quiz
             </LinkButton>
-          ) : undefined
+            {growth.length > 0 && (
+              <LinkButton href={`/projects/${projectId}/recommendations`} variant="secondary" size="sm">
+                View recommendations
+              </LinkButton>
+            )}
+          </>
         }
       />
 
@@ -43,22 +49,30 @@ export default async function GrowthPage({ params }: { params: Promise<{ project
       ) : growth.length === 0 ? (
         <EmptyState
           icon={<TrendUpIcon className="h-5 w-5" />}
-          title="No growth to show yet"
-          description="Upload study material and complete a quiz — your progress trend will appear here after your first results."
+          title="No concepts to track yet"
+          description="Upload study material to create concepts, then complete a quiz — your improvement and attention signals will appear here after two results per concept."
           action={
-            <LinkButton href={`/projects/${projectId}/materials`} size="sm">
-              Upload material
-            </LinkButton>
+            <div className="flex flex-wrap justify-center gap-2">
+              <LinkButton href={`/projects/${projectId}/materials`} size="sm">
+                Upload material
+              </LinkButton>
+              <LinkButton href={`/projects/${projectId}/tutor`} variant="secondary" size="sm">
+                Ask the Tutor
+              </LinkButton>
+            </div>
           }
         />
       ) : (
         <>
           <GrowthClient entries={growth} projectId={projectId} />
           <p className="mt-4 text-xs text-stone-400">
-            A concept counts as improving or needing attention when it moves more than a few
-            points between results.{" "}
+            Improving or needing attention means moving more than 5 points between your last two results.{" "}
             <Link href={`/projects/${projectId}/mastery`} className="font-medium text-stone-600 hover:text-stone-900">
               View mastery →
+            </Link>{" "}
+            ·{" "}
+            <Link href={`/projects/${projectId}/analytics`} className="font-medium text-stone-600 hover:text-stone-900">
+              View analytics →
             </Link>
           </p>
         </>

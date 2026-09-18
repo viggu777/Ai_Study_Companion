@@ -12,6 +12,35 @@ export function classifyTrend(previousScore: number, newScore: number): Trend {
   return "STABLE";
 }
 
+export interface HistoryPoint {
+  previous_score: number | string;
+  new_score: number | string;
+}
+
+/**
+ * Shared trend rule: compare the TWO most recent history points
+ * (new_score of latest vs new_score of prior). With 0–1 rows there is no
+ * comparison yet — returns STABLE with null delta/previousScore so the UI
+ * shows "New — take another quiz to see trend" instead of an inflated
+ * single-point jump (a first result of e.g. 0→30 is evidence, not a trend).
+ * Reused by growth, mastery overview, and analytics trend counts so all
+ * three pages classify identically.
+ */
+export function summarizeHistoryTrend(rowsNewestFirst: HistoryPoint[]): {
+  trend: Trend;
+  delta: number | null;
+  previousScore: number | null;
+} {
+  if (rowsNewestFirst.length < 2) return { trend: "STABLE", delta: null, previousScore: null };
+  const latest = Number(rowsNewestFirst[0].new_score);
+  const prior = Number(rowsNewestFirst[1].new_score);
+  return {
+    trend: classifyTrend(prior, latest),
+    delta: Math.round((latest - prior) * 100) / 100,
+    previousScore: prior,
+  };
+}
+
 export interface GrowthEntry {
   conceptId: string;
   conceptName: string;
@@ -100,62 +129,24 @@ export async function getGrowthAnalysis(
     byConcept.set(h.concept_id, arr);
   }
 
-  // For each concept, fetch mastery_history last 2 points
+  // One entry per concept; trend/delta via the shared rule (needs 2 results).
+  // If concept_mastery current differs from the history latest (race),
+  // prefer the live mastery value as currentScore.
   const entries: GrowthEntry[] = [];
   for (let i = 0; i < conceptRows.length; i++) {
     const c = conceptRows[i];
     const h = byConcept.get(c.id) ?? [];
     const historyCount = h.length;
-    const currentScore = masteryByConcept.get(c.id) ?? null;
-
-    if (h.length === 0) {
-      // No history — haven't been tested yet; current may be null or 0; trend STABLE
-      entries.push({
-        conceptId: c.id,
-        conceptName: c.name,
-        description: c.description,
-        previousScore: null,
-        currentScore,
-        delta: null,
-        trend: "STABLE",
-        historyCount,
-        sourceMaterialId: c.source_material_id ?? null,
-      });
-      continue;
-    }
-    if (h.length === 1) {
-      // Single event — delta = new - previous of that event; previous/current from that row
-      const only = h[0];
-      const prev = Number(only.previous_score);
-      const curr = Number(only.new_score);
-      // If concept_mastery current differs from history latest (race), prefer mastery current but compute trend from history
-      const trend = classifyTrend(prev, curr);
-      entries.push({
-        conceptId: c.id,
-        conceptName: c.name,
-        description: c.description,
-        previousScore: prev,
-        currentScore: currentScore ?? curr,
-        delta: Math.round((curr - prev) * 100) / 100,
-        trend,
-        historyCount,
-        sourceMaterialId: c.source_material_id ?? null,
-      });
-      continue;
-    }
-    // >=2: compare two most recent history points: new_score of latest vs new_score of previous
-    const latest = h[0];
-    const prior = h[1];
-    const latestScore = Number(latest.new_score);
-    const priorScore = Number(prior.new_score);
-    const trend = classifyTrend(priorScore, latestScore);
+    const masteryCurrent = masteryByConcept.get(c.id) ?? null;
+    const { trend, delta, previousScore } = summarizeHistoryTrend(h);
+    const fallbackCurrent = h.length > 0 ? Number(h[0].new_score) : null;
     entries.push({
       conceptId: c.id,
       conceptName: c.name,
       description: c.description,
-      previousScore: priorScore,
-      currentScore: currentScore ?? latestScore,
-      delta: Math.round((latestScore - priorScore) * 100) / 100,
+      previousScore,
+      currentScore: masteryCurrent ?? fallbackCurrent,
+      delta,
       trend,
       historyCount,
       sourceMaterialId: c.source_material_id ?? null,

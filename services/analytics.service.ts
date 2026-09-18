@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
-import { classifyTrend } from "@/services/growth.service";
+import { summarizeHistoryTrend } from "@/services/growth.service";
 
 export const ACTIVE_PROJECT_WINDOW_DAYS = 7;
 
@@ -9,24 +9,28 @@ export interface ProjectAnalytics {
   learningActivity: {
     tutorSessions: number; // conversations count
     quizAttempts: number;
-    questionsAnswered: number;
+    questionsAnswered: number; // quiz answers (graded + pending)
     tutorMessagesSent: number; // learning_events TUTOR_MESSAGE_SENT
+    practiceSessions: number; // practice_assignments count
+    practiceAnswers: number; // practice_responses count
+    flashcardReviews: number; // mastery_history rows sourced from flashcards
   };
   assessment: {
     totalAnswers: number;
-    averageScore: number | null; // avg across all answers with score
-    averageOpenEndedScore: number | null; // avg where evaluation not null
+    averageScore: number | null; // avg across all quiz answers with score
+    averageOpenEndedScore: number | null; // avg across OPEN_ENDED answers with score
     accuracy: number | null; // is_correct true / total where is_correct not null, 0..100
     accuracyOverTime: Array<{ date: string; accuracy: number | null; avgScore: number | null; count: number }>;
-    mcqCount: number;
-    openEndedCount: number;
+    mcqCount: number; // answers on MCQ questions (by questions.type, not heuristics)
+    openEndedCount: number; // answers on OPEN_ENDED questions
   };
   mastery: {
     perConcept: Array<{ conceptId: string; name: string; mastery: number | null }>;
     avgMastery: number | null;
     improvingCount: number;
-    stableCount: number;
+    stableCount: number; // tested concepts with no significant move (excludes untested)
     requiresAttentionCount: number;
+    untestedCount: number; // concepts with zero mastery_history rows
     totalConcepts: number;
   };
   aiActivity: {
@@ -63,6 +67,44 @@ async function verifyProjectOwnership(projectId: string, userId: string): Promis
   return { spaceId: (data as { space_id: string }).space_id };
 }
 
+export interface TrendDayInput {
+  created_at: string;
+  is_correct: boolean | null;
+  score: number | null;
+}
+
+/**
+ * Pure grouping for the accuracy-over-time chart: one point per active day
+ * (YYYY-MM-DD), oldest first, capped at the last 14 active days. Days whose
+ * answers are all still pending keep accuracy null (rendered as "no data",
+ * never as a zero bar). Unit-tested — the page must never invent trend data.
+ */
+export function buildAccuracyOverTime(
+  rows: TrendDayInput[]
+): Array<{ date: string; accuracy: number | null; avgScore: number | null; count: number }> {
+  const grouped = new Map<string, Array<{ is_correct: boolean | null; score: number | null }>>();
+  for (const a of rows) {
+    const date = (a.created_at ?? "").slice(0, 10) || "unknown";
+    const arr = grouped.get(date) ?? [];
+    arr.push({ is_correct: a.is_correct, score: a.score });
+    grouped.set(date, arr);
+  }
+  return Array.from(grouped.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, dayRows]) => {
+      const total = dayRows.length;
+      const accRows = dayRows.filter((r) => r.is_correct !== null);
+      const acc =
+        accRows.length > 0
+          ? Math.round((accRows.filter((r) => r.is_correct).length / accRows.length) * 10000) / 100
+          : null;
+      const scores = dayRows.map((r) => r.score).filter((v): v is number => v !== null);
+      const avg = scores.length > 0 ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100 : null;
+      return { date, accuracy: acc, avgScore: avg, count: total };
+    })
+    .slice(-14); // last 14 active days max
+}
+
 export async function getProjectAnalytics(projectId: string): Promise<ProjectAnalytics> {
   const userId = await getCurrentUserId();
   await verifyProjectOwnership(projectId, userId);
@@ -76,6 +118,7 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     masteryRes,
     aiOpsRes,
     learningEventsRes,
+    practiceAssignRes,
   ] = await Promise.all([
     db.from("conversations").select("id", { count: "exact" }).eq("project_id", projectId).eq("user_id", userId),
     db.from("quizzes").select("id, created_at", { count: "exact" }).eq("project_id", projectId).eq("user_id", userId),
@@ -83,6 +126,7 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     db.from("concept_mastery").select("concept_id, mastery_score, updated_at").eq("project_id", projectId).eq("user_id", userId),
     db.from("ai_operations").select("feature, latency_ms, success, estimated_cost").eq("project_id", projectId).eq("user_id", userId),
     db.from("learning_events").select("id, event_type, created_at").eq("project_id", projectId).eq("user_id", userId).order("created_at", { ascending: false }).limit(100),
+    db.from("practice_assignments").select("id", { count: "exact" }).eq("project_id", projectId).eq("user_id", userId),
   ]);
 
   if (conversationsRes.error) throw new Error(conversationsRes.error.message);
@@ -92,20 +136,22 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
   const quizAttempts = quizzesRes.count ?? (Array.isArray(quizzesRes.data) ? quizzesRes.data.length : 0);
   const quizIds = ((quizzesRes.data ?? []) as Array<{ id: string }>).map((q) => q.id);
 
-  // Questions answered: need to join via questions
+  // Questions answered: join via questions (with type so the MCQ/written
+  // mix comes from the real questions.type, never from evaluation heuristics).
   let questionsAnswered = 0;
   let totalAnswers = 0;
-  let answerRows: Array<{ question_id: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string }> = [];
-  let questionsForProject: Array<{ id: string; concept_id: string }> = [];
+  let answerRows: Array<{ question_id: string; is_correct: boolean | null; score: number | string | null; created_at: string }> = [];
+  const typeByQuestionId = new Map<string, string>();
 
   if (quizIds.length > 0) {
-    const { data: questions } = await db.from("questions").select("id, concept_id").in("quiz_id", quizIds);
-    questionsForProject = (questions ?? []) as Array<{ id: string; concept_id: string }>;
+    const { data: questions } = await db.from("questions").select("id, concept_id, type").in("quiz_id", quizIds);
+    const questionsForProject = (questions ?? []) as Array<{ id: string; concept_id: string; type: string }>;
+    for (const q of questionsForProject) typeByQuestionId.set(q.id, q.type);
     const questionIds = questionsForProject.map((q) => q.id);
     if (questionIds.length > 0) {
       const { data: answers, error: ansErr } = await db
         .from("answers")
-        .select("question_id, is_correct, score, evaluation, created_at")
+        .select("question_id, is_correct, score, created_at")
         .eq("user_id", userId)
         .in("question_id", questionIds)
         .order("created_at", { ascending: true });
@@ -116,7 +162,7 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     }
   }
 
-  // Assessment breakdown
+  // Assessment breakdown (quiz answers only — practice has its own summary UI).
   let averageScore: number | null = null;
   let averageOpenEndedScore: number | null = null;
   let accuracy: number | null = null;
@@ -128,15 +174,15 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     if (scores.length > 0) averageScore = Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100;
 
     const openEndedScores = answerRows
-      .filter((a) => a.evaluation !== null)
+      .filter((a) => typeByQuestionId.get(a.question_id) === "OPEN_ENDED")
       .map((a) => (a.score !== null ? Number(a.score) : null))
       .filter((v): v is number => v !== null);
     if (openEndedScores.length > 0) averageOpenEndedScore = Math.round((openEndedScores.reduce((a, b) => a + b, 0) / openEndedScores.length) * 100) / 100;
-    openEndedCount = openEndedScores.length;
-    mcqCount = answerRows.length - openEndedCount; // approximate: those without evaluation are MCQ; for manual count this aligns with grading path
+    // questions.type is CHECK-constrained to MCQ/OPEN_ENDED; residual (unmapped)
+    // answers stay in the total via the MCQ bucket so counts always reconcile.
+    openEndedCount = answerRows.filter((a) => typeByQuestionId.get(a.question_id) === "OPEN_ENDED").length;
+    mcqCount = answerRows.length - openEndedCount;
 
-    // More precise mcq distinction: is_correct not null and evaluation null
-    // but keep count as above for display
     const accCandidates = answerRows.filter((a) => a.is_correct !== null);
     if (accCandidates.length > 0) {
       const correct = accCandidates.filter((a) => a.is_correct === true).length;
@@ -144,25 +190,14 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     }
   }
 
-  // Accuracy over time: group by date (YYYY-MM-DD) by answer.created_at
-  const grouped = new Map<string, Array<{ is_correct: boolean | null; score: number | null }>>();
-  for (const a of answerRows) {
-    const date = (a.created_at ?? "").slice(0, 10) || "unknown";
-    const arr = grouped.get(date) ?? [];
-    arr.push({ is_correct: a.is_correct, score: a.score !== null ? Number(a.score) : null });
-    grouped.set(date, arr);
-  }
-  const accuracyOverTime = Array.from(grouped.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, rows]) => {
-      const total = rows.length;
-      const accRows = rows.filter((r) => r.is_correct !== null);
-      const acc = accRows.length > 0 ? Math.round((accRows.filter((r) => r.is_correct).length / accRows.length) * 10000) / 100 : null;
-      const scores = rows.map((r) => r.score).filter((v): v is number => v !== null);
-      const avg = scores.length > 0 ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100 : null;
-      return { date, accuracy: acc, avgScore: avg, count: total };
-    })
-    .slice(-14); // last 14 days max
+  // Accuracy over time via the pure, unit-tested helper (last 14 active days).
+  const accuracyOverTime = buildAccuracyOverTime(
+    answerRows.map((a) => ({
+      created_at: a.created_at,
+      is_correct: a.is_correct,
+      score: a.score !== null ? Number(a.score) : null,
+    }))
+  );
 
   // Mastery per concept
   const concepts = (conceptsRes.data ?? []) as Array<{ id: string; name: string }>;
@@ -180,17 +215,19 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     avgMastery = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
   }
 
-  // Trend counts via growth logic: compare last 2 mastery_history points per concept.
-  // Batched into ONE query (was N serial round-trips, one per concept) — this
-  // ran on every Analytics page load and dominated its latency.
+  // Trend counts via the shared growth rule (batched into ONE query).
+  // Concepts with zero history are "untested" — never counted as stable, so
+  // the badges always reconcile: improving + stable + attention + untested = total.
   let improvingCount = 0;
   let stableCount = 0;
   let requiresAttentionCount = 0;
+  let untestedCount = 0;
+  let flashcardReviews = 0;
   if (concepts.length > 0) {
     const conceptIds = concepts.map((c) => c.id);
     const { data: allHist } = await db
       .from("mastery_history")
-      .select("concept_id, previous_score, new_score, created_at")
+      .select("concept_id, previous_score, new_score, reason, created_at")
       .eq("user_id", userId)
       .in("concept_id", conceptIds)
       .order("created_at", { ascending: false })
@@ -203,32 +240,45 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
       concept_id: string;
       previous_score: number | string;
       new_score: number | string;
+      reason: string | null;
     }>)) {
       const arr = histByConcept.get(h.concept_id) ?? [];
       arr.push({ previous_score: h.previous_score, new_score: h.new_score });
       histByConcept.set(h.concept_id, arr);
+      if (typeof h.reason === "string" && h.reason.toLowerCase().startsWith("flashcard:")) flashcardReviews++;
     }
     for (const c of concepts) {
       const h = histByConcept.get(c.id) ?? [];
-      let trend: ReturnType<typeof classifyTrend>;
       if (h.length === 0) {
-        // No history — check mastery value: null or <60 considered requires? But for analytics we mirror growth: STABLE if no history
-        // However weak detection for mastery summary: if mastery null or <60, counts as weak for UI hint
-        // Keep trend STABLE for this classification
-        trend = "STABLE";
-      } else if (h.length === 1) {
-        const prev = Number(h[0].previous_score);
-        const curr = Number(h[0].new_score);
-        trend = classifyTrend(prev, curr);
-      } else {
-        const latest = Number(h[0].new_score);
-        const prior = Number(h[1].new_score);
-        trend = classifyTrend(prior, latest);
+        untestedCount++;
+        continue;
       }
+      const { trend } = summarizeHistoryTrend(h);
       if (trend === "IMPROVING") improvingCount++;
       else if (trend === "REQUIRES_ATTENTION") requiresAttentionCount++;
       else stableCount++;
     }
+  }
+
+  // Practice activity (best-effort — pre-007 databases degrade to zeros).
+  const practiceAssignmentIds = ((practiceAssignRes.data ?? []) as Array<{ id: string }>).map((a) => a.id);
+  const practiceSessions = practiceAssignRes.count ?? practiceAssignmentIds.length;
+  let practiceAnswers = 0;
+  try {
+    if (practiceAssignmentIds.length > 0) {
+      const { data: pqs } = await db.from("practice_questions").select("id").in("assignment_id", practiceAssignmentIds);
+      const pqIds = ((pqs ?? []) as Array<{ id: string }>).map((q) => q.id);
+      if (pqIds.length > 0) {
+        const { count } = await db
+          .from("practice_responses")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .in("question_id", pqIds);
+        practiceAnswers = count ?? 0;
+      }
+    }
+  } catch {
+    practiceAnswers = 0;
   }
 
   // AI activity scoped to project
@@ -268,6 +318,9 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
       quizAttempts,
       questionsAnswered,
       tutorMessagesSent,
+      practiceSessions,
+      practiceAnswers,
+      flashcardReviews,
     },
     assessment: {
       totalAnswers,
@@ -284,6 +337,7 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
       improvingCount,
       stableCount,
       requiresAttentionCount,
+      untestedCount,
       totalConcepts: concepts.length,
     },
     aiActivity: {

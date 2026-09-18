@@ -1,5 +1,6 @@
 import { getServiceDb } from "@/lib/db/supabase";
 import { getDb } from "@/lib/db/supabase";
+import { summarizeHistoryTrend } from "./growth.service";
 
 /**
  * Deterministic mastery formula — plain backend code, LLM never sets mastery.
@@ -578,35 +579,16 @@ export async function recordFlashcardReview(params: {
 // concept was mastered, not just a number.
 // ---------------------------------------------------------------------------
 
-export type MasteryLevel = "UNTESTED" | "EMERGING" | "DEVELOPING" | "PROFICIENT" | "MASTERED";
 export type MasteryTrend = "IMPROVING" | "STABLE" | "REQUIRES_ATTENTION";
 export type MasterySource = "quiz" | "practice" | "flashcard";
 
-export function masteryLevelFor(score: number | null): MasteryLevel {
-  if (score === null || Number.isNaN(score)) return "UNTESTED";
-  if (score < 35) return "EMERGING";
-  if (score < 70) return "DEVELOPING";
-  if (score < 90) return "PROFICIENT";
-  return "MASTERED";
-}
+// Bands live in lib/mastery-level (client-safe); re-exported here so existing
+// `@/services/mastery.service` imports keep working unchanged.
+export { masteryLevelFor, MASTERY_LEVEL_META, type MasteryLevel } from "@/lib/mastery-level";
+import { masteryLevelFor, type MasteryLevel } from "@/lib/mastery-level";
 
-export const MASTERY_LEVEL_META: Record<
-  MasteryLevel,
-  { label: string; range: string; hint: string }
-> = {
-  UNTESTED: { label: "Not started", range: "—", hint: "No quiz, practice, or flashcard evidence yet" },
-  EMERGING: { label: "Emerging", range: "0–34", hint: "Just starting — needs foundations" },
-  DEVELOPING: { label: "Developing", range: "35–69", hint: "Getting there — keep practicing" },
-  PROFICIENT: { label: "Proficient", range: "70–89", hint: "Solid — stretch with harder work" },
-  MASTERED: { label: "Mastered", range: "90–100", hint: "Teach it back to lock it in" },
-};
-
-function classifyTrendDelta(previousScore: number, newScore: number): MasteryTrend {
-  const delta = newScore - previousScore;
-  if (delta > 5) return "IMPROVING";
-  if (delta < -5) return "REQUIRES_ATTENTION";
-  return "STABLE";
-}
+/* Trend classification lives in growth.service (summarizeHistoryTrend) so
+   mastery, growth, and analytics classify identically — see usage below. */
 
 export interface MasterySourceBreakdown {
   quizCount: number;
@@ -791,22 +773,12 @@ export async function getMasteryOverview(
     const mastery = masteryByConcept.get(c.id) ?? null;
     const currentScore = mastery ? mastery.score : h.length > 0 ? Number(h[0].new_score) : null;
 
-    let previousScore: number | null = null;
-    let delta: number | null = null;
-    let trend: MasteryTrend = "STABLE";
-    if (h.length === 1) {
-      const prev = Number(h[0].previous_score);
-      const curr = Number(h[0].new_score);
-      previousScore = prev;
-      delta = Math.round((curr - prev) * 100) / 100;
-      trend = classifyTrendDelta(prev, curr);
-    } else if (h.length >= 2) {
-      const latest = Number(h[0].new_score);
-      const prior = Number(h[1].new_score);
-      previousScore = prior;
-      delta = Math.round((latest - prior) * 100) / 100;
-      trend = classifyTrendDelta(prior, latest);
-    }
+    // Shared rule with growth/analytics: a trend needs 2 results; a single
+    // result is evidence without a trend (delta null → "New" in the UI).
+    const summarized = summarizeHistoryTrend(h);
+    const previousScore: number | null = summarized.previousScore;
+    const delta: number | null = summarized.delta;
+    const trend: MasteryTrend = summarized.trend;
 
     // Per-source breakdown from reason prefixes (newest-first already).
     let qCount = 0;
