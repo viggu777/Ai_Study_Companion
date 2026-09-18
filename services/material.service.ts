@@ -2,11 +2,24 @@ import { getDb, getServiceDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
 import { inngest } from "@/lib/jobs/client";
 import { buildStoragePath, downloadPdf, uploadPdf } from "@/lib/storage/materialStorage";
-import { chunkPlainText } from "@/lib/rag/chunker";
+import { chunkPlainText, chunkText } from "@/lib/rag/chunker";
 import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
+import { extractImageText, isImageFile, normalizeImageMime } from "@/lib/ocr/imageOcr";
+import { extractScannedPdfText, joinSegmentsForPrompt } from "@/lib/ocr/scannedPdfOcr";
+import { createHash } from "node:crypto";
 
-const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB (PDFs and images)
+
+/**
+ * SHA-256 hex of the raw file bytes. Used for duplicate-upload detection:
+ * the same file uploaded twice to the same project reuses the existing row
+ * instead of creating a duplicate row + duplicate background job.
+ * Pure — unit-tested in tests/unit/material-dedup.test.ts.
+ */
+export function computeFileHash(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
 
 /**
  * Statuses a background worker may atomically claim for processing.
@@ -50,10 +63,20 @@ function isPdf(mimeType: string, filename: string): boolean {
   return false;
 }
 
+function resolveUploadKind(
+  mimeType: string,
+  filename: string
+): { kind: "pdf" | "image"; mime: string } | null {
+  if (isPdf(mimeType, filename)) return { kind: "pdf", mime: "application/pdf" };
+  const imgMime = normalizeImageMime(mimeType, filename);
+  if (imgMime) return { kind: "image", mime: imgMime };
+  return null;
+}
+
 export async function uploadMaterial(
   projectId: string,
   file: File
-): Promise<{ id: string; status: string }> {
+): Promise<{ id: string; status: string; duplicate?: boolean }> {
   const userId = await getCurrentUserId();
   const db = await getDb();
 
@@ -66,42 +89,101 @@ export async function uploadMaterial(
     .single();
   if (projErr || !project) throw new Error("Project not found");
 
-  // Validate PDF + size (synchronous, return 400-style error before DB write)
-  const mimeType = file.type || "application/pdf";
-  if (!isPdf(mimeType, file.name)) {
-    throw new Error("Only PDF files are allowed");
+  // Validate PDF-or-image + size (synchronous, return 400-style error before DB write)
+  const rawMime = file.type || "";
+  const kind = resolveUploadKind(rawMime, file.name);
+  if (!kind) {
+    throw new Error("Only PDF or image files are allowed (pdf, png, jpg, jpeg, webp)");
   }
-  if (file.size > MAX_PDF_BYTES) {
-    throw new Error(`File too large — max ${MAX_PDF_BYTES / 1024 / 1024} MB`);
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error(`File too large — max ${MAX_FILE_BYTES / 1024 / 1024} MB`);
   }
   if (file.size === 0) throw new Error("File is empty");
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  // Quick PDF header validation (avoid storing non-PDF that spoofs mime)
-  if (!buffer.slice(0, 5).toString().startsWith("%PDF")) {
-    // Still allow but background job will fail → FAILED; for immediate feedback we treat as allowed
-    // but we will not reject here to let FAILED path be tested via corrupted file
+  const fileHash = computeFileHash(buffer);
+
+  // Duplicate-upload guard: same bytes already in this project → reuse the
+  // existing row instead of creating a duplicate row + duplicate background
+  // job. Scoped by (project_id, file_hash); cross-project re-uploads are
+  // allowed (each project keeps its own knowledge). FAILED duplicates are
+  // returned as-is so the user can Retry on the original row. The file_hash
+  // column ships in 010_material_dedup.sql — if the DB predates it, the
+  // lookup/insert falls back gracefully and upload still works.
+  try {
+    const { data: dup, error: dupErr } = await db
+      .from("materials")
+      .select("id, status")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .eq("file_hash", fileHash)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!dupErr && dup) {
+      const existing = dup as { id: string; status: string };
+      return { id: existing.id, status: existing.status, duplicate: true };
+    }
+  } catch {
+    // file_hash column missing (010 not applied yet) — proceed without dedup.
+  }
+
+  if (kind.kind === "pdf") {
+    // Quick PDF header validation (avoid storing non-PDF that spoofs mime)
+    if (!buffer.slice(0, 5).toString().startsWith("%PDF")) {
+      // Still allow but background job will fail → FAILED; for immediate feedback we treat as allowed
+      // but we will not reject here to let FAILED path be tested via corrupted file
+    }
   }
 
   // Create materials row with QUEUED
-  const { data: material, error: matErr } = await db
-    .from("materials")
-    .insert({
-      project_id: projectId,
-      user_id: userId,
-      filename: file.name,
-      storage_path: "pending", // placeholder, updated after upload
-      mime_type: "application/pdf",
-      status: "QUEUED",
-    })
-    .select()
-    .single();
-  if (matErr || !material) throw new Error(matErr?.message ?? "Failed to create material");
+  let material: { id: string } | null = null;
+  {
+    const withHash = await db
+      .from("materials")
+      .insert({
+        project_id: projectId,
+        user_id: userId,
+        filename: file.name,
+        storage_path: "pending", // placeholder, updated after upload
+        mime_type: kind.mime,
+        status: "QUEUED",
+        file_hash: fileHash,
+      })
+      .select()
+      .single();
+    if (!withHash.error && withHash.data) {
+      material = withHash.data as { id: string };
+    } else {
+      const msg = withHash.error?.message ?? "";
+      // Pre-010 DBs have no file_hash column — retry without it.
+      if (msg.includes("file_hash")) {
+        const fallback = await db
+          .from("materials")
+          .insert({
+            project_id: projectId,
+            user_id: userId,
+            filename: file.name,
+            storage_path: "pending",
+            mime_type: kind.mime,
+            status: "QUEUED",
+          })
+          .select()
+          .single();
+        if (fallback.error || !fallback.data)
+          throw new Error(fallback.error?.message ?? "Failed to create material");
+        material = fallback.data as { id: string };
+      } else {
+        throw new Error(msg || "Failed to create material");
+      }
+    }
+  }
+  if (!material) throw new Error("Failed to create material");
 
   const storagePath = buildStoragePath(userId, projectId, material.id, file.name);
 
   try {
-    await uploadPdf(storagePath, buffer, "application/pdf");
+    await uploadPdf(storagePath, buffer, kind.mime);
   } catch (e) {
     // Mark FAILED immediately if storage upload fails
     const msg = e instanceof Error ? e.message : String(e);
@@ -293,7 +375,7 @@ export async function processMaterial(materialId: string) {
   // Fetch material (needs user_id to preserve ownership context for background job)
   const { data: material, error: matErr } = await db
     .from("materials")
-    .select("id, project_id, user_id, storage_path, filename, status")
+    .select("id, project_id, user_id, storage_path, filename, mime_type, status")
     .eq("id", materialId)
     .single();
   if (matErr || !material) throw new Error(`Material not found: ${materialId}`);
@@ -336,26 +418,61 @@ export async function processMaterial(materialId: string) {
   });
 
   try {
-    // 2. Extract text
+    // 2. Extract text (PRD §5: normal text, tables, images, diagrams, scanned pages)
+    // - Images → free offline OCR (sharp + tesseract.js), page 1.
+    // - PDFs → pdf-parse fast path; empty result means scanned/image-only
+    //   pages → render to PNG (pdfjs + napi canvas) + OCR per page.
     const buffer = await downloadPdf(material.storage_path);
-    const extracted = await extractPdfText(buffer);
-    const text = extracted.text;
-    numPages = extracted.numPages;
+    const storedMime = ((material as { mime_type?: string }).mime_type ?? "") as string;
+    const storedName = (material.filename ?? "") as string;
+    const isImage = isImageFile(storedMime, storedName);
+
+    let text: string;
+    let extractionMethod = "pdf-text";
+    // Page-accurate segments for OCR paths (real page numbers → citations).
+    let ocrSegments: { text: string; pageNumber: number }[] | null = null;
+    if (isImage) {
+      const ocr = await extractImageText(buffer);
+      text = ocr.text;
+      numPages = 1;
+      extractionMethod = "image-ocr";
+      ocrSegments = [{ text, pageNumber: 1 }];
+    } else {
+      const extracted = await extractPdfText(buffer);
+      text = extracted.text;
+      numPages = extracted.numPages;
+      if (!text || text.trim().length < 20) {
+        // Scanned / image-only PDF — render pages and OCR them.
+        // Page-cap / render errors throw actionable messages (caught below → FAILED).
+        const scanned = await extractScannedPdfText(buffer);
+        numPages = scanned.numPages;
+        ocrSegments = scanned.segments;
+        text = ocrSegments.map((s) => s.text).join("\n\n");
+        extractionMethod = "scanned-pdf-ocr";
+      }
+    }
 
     if (!text || text.trim().length < 20) {
-      // Empty extraction + real pages almost always means a scanned /
-      // image-only PDF. We have no OCR yet, so fail with an actionable
-      // message instead of a generic error.
+      if (isImage) {
+        throw new Error(
+          "No readable text found in this image. Try a clearer photo/screenshot with printed text (handwriting and blurry photos often fail with free OCR)."
+        );
+      }
       throw new Error(
-        numPages > 0
-          ? `No extractable text found in this PDF (${numPages} page${numPages === 1 ? "" : "s"}). It looks like a scanned or image-only document, and OCR is not supported yet. Please upload a PDF with selectable text.`
+        numPages != null && numPages > 0
+          ? `No readable text found in this PDF (${numPages} page${numPages === 1 ? "" : "s"}), even with OCR. It may be blank, handwritten, or too blurry for free OCR — try clearer scans or upload key pages as PNG/JPG images.`
           : "No extractable text found in PDF"
       );
     }
 
-    // 3. Chunk
-    const chunks = chunkPlainText(text, numPages);
+    // 3. Chunk — OCR paths use real per-page segments so chunk.page_number
+    // matches the source page (citations stay traceable); text PDFs keep the
+    // existing estimated-split behavior.
+    const chunks = ocrSegments ? chunkText(ocrSegments) : chunkPlainText(text, numPages);
     if (chunks.length === 0) throw new Error("Chunking produced no chunks");
+
+    // Prompt window for concept extraction (same 8000-char budget either way).
+    const conceptSourceText = ocrSegments ? joinSegmentsForPrompt(ocrSegments) : text.slice(0, 8000);
 
     // 4. Embed each chunk via AIService (Gemini — same model/config as queries) — each call logs EMBEDDING per phase 15
     const contents = chunks.map((c) => c.content);
@@ -436,7 +553,7 @@ export async function processMaterial(materialId: string) {
         const result = await aiService.generateStructured<{ concepts: { name: string; description: string }[] }>({
           systemPrompt:
             "You are a concept extractor. From the document text, extract up to 8 distinct key concepts as { name, description }. Names should be concise (2-5 words), descriptions one sentence. Return JSON { concepts: [...] } only, no extra keys.",
-          userPrompt: `Document (first 8000 chars):\n${text.slice(0, 8000)}\n\nReturn JSON with key "concepts".`,
+          userPrompt: `Document (first 8000 chars):\n${conceptSourceText}\n\nReturn JSON with key "concepts".`,
           schema: { concepts: "array" },
           temperature: 0.2,
           maxTokens: 1500,
@@ -509,7 +626,7 @@ export async function processMaterial(materialId: string) {
       event_type: "MATERIAL_READY",
       entity_type: "material",
       entity_id: materialId,
-      metadata: { page_count: numPages, chunks: chunks.length, concepts: concepts.length },
+      metadata: { page_count: numPages, chunks: chunks.length, concepts: concepts.length, extraction_method: extractionMethod },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
