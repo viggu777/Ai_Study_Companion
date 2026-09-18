@@ -65,17 +65,39 @@ export function parseProjectBody(body: unknown): SchemaResult<{ name: string; de
   return { ok: true, data: out };
 }
 
-export function parseQuizGenerateBody(body: unknown): SchemaResult<{ count?: number }> {
+export function parseQuizGenerateBody(body: unknown): SchemaResult<{ count?: number; conceptIds?: string[]; materialIds?: string[] }> {
   if (typeof body !== "object" || body === null) return { ok: true, data: {} };
   const b = body as Record<string, unknown>;
-  if (b.count === undefined) return { ok: true, data: {} };
-  if (typeof b.count !== "number" || !Number.isInteger(b.count)) {
-    return { ok: false, error: "count must be an integer" };
+  let count: number | undefined;
+  if (b.count !== undefined) {
+    if (typeof b.count !== "number" || !Number.isInteger(b.count)) {
+      return { ok: false, error: "count must be an integer" };
+    }
+    if (b.count < QUIZ_COUNT_MIN || b.count > QUIZ_COUNT_MAX) {
+      return { ok: false, error: `count must be ${QUIZ_COUNT_MIN}-${QUIZ_COUNT_MAX}` };
+    }
+    count = b.count;
   }
-  if (b.count < QUIZ_COUNT_MIN || b.count > QUIZ_COUNT_MAX) {
-    return { ok: false, error: `count must be ${QUIZ_COUNT_MIN}-${QUIZ_COUNT_MAX}` };
-  }
-  return { ok: true, data: { count: b.count } };
+  const parseIdList = (v: unknown, max = 200): string[] | undefined | null => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) return null;
+    if (v.length === 0) return null;
+    if (v.length > max) return null;
+    const seen = new Set<string>();
+    for (const item of v) {
+      if (typeof item !== "string") return null;
+      const t = item.trim();
+      if (t.length === 0 || t.length > QUESTION_ID_MAX) return null;
+      seen.add(t);
+    }
+    if (seen.size === 0) return null;
+    return [...seen];
+  };
+  const conceptIds = parseIdList(b.conceptIds ?? b.concept_ids);
+  if (conceptIds === null) return { ok: false, error: "conceptIds must be a non-empty array of id strings (max 200)" };
+  const materialIds = parseIdList(b.materialIds ?? b.material_ids);
+  if (materialIds === null) return { ok: false, error: "materialIds must be a non-empty array of id strings (max 200)" };
+  return { ok: true, data: { count, conceptIds, materialIds } };
 }
 
 export function parseQuizSubmitBody(body: unknown): SchemaResult<{ questionId: string; response: string }> {

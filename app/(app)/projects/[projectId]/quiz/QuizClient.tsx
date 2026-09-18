@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { QuizIcon, ArrowRightIcon } from "@/components/icons";
@@ -10,6 +10,39 @@ import {
   QUIZ_MIN_COUNT,
   clampQuizCount,
 } from "@/ai/quiz";
+
+interface ConceptMeta {
+  conceptId: string;
+  conceptName: string;
+  description: string | null;
+  sourceMaterialId: string | null;
+  materialName: string | null;
+  currentScore: number | null;
+}
+
+/** Practice timer presets (minutes). 0 = no limit. Client-only — no backend change. */
+const TIME_LIMIT_OPTIONS = [0, 5, 10, 15, 20];
+
+function formatClock(totalSec: number): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+function topicTone(score: number | null): "neutral" | "warning" | "accent" | "success" {
+  if (score === null) return "neutral";
+  if (score < 35) return "warning";
+  if (score < 70) return "accent";
+  return "success";
+}
+
+function topicLabel(score: number | null): string {
+  if (score === null) return "Untested";
+  if (score < 35) return `${Math.round(score)}% Weak`;
+  if (score < 70) return `${Math.round(score)}% Dev`;
+  return `${Math.round(score)}% Strong`;
+}
 
 interface QuizListItem {
   id: string;
@@ -106,6 +139,21 @@ export default function QuizClient({
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
 
+  // ---- Topic scope (checkboxes grouped by material) ----
+  const [concepts, setConcepts] = useState<ConceptMeta[]>([]);
+  const [conceptsLoading, setConceptsLoading] = useState(true);
+  const [conceptsError, setConceptsError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectionInitRef = useRef(false);
+  const [topicSearch, setTopicSearch] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  // ---- Practice timer (client-only elapsed + optional countdown) ----
+  const [timeLimitMin, setTimeLimitMin] = useState<number>(0);
+  const [quizStartAt, setQuizStartAt] = useState<number | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [timeUp, setTimeUp] = useState(false);
+
   const fetchQuizzes = async () => {
     try {
       const res = await fetch(`/api/projects/${projectId}/quiz`);
@@ -124,14 +172,132 @@ export default function QuizClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // Topic scope data — same endpoint as the Concepts page (includes mastery +
+  // material names), so no new API is needed.
+  const fetchConcepts = async () => {
+    setConceptsLoading(true);
+    setConceptsError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/concepts`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to load topics");
+      const list = (data.concepts ?? []) as ConceptMeta[];
+      setConcepts(list);
+      // Default: everything selected. Only auto-init once so a background
+      // refetch never wipes the user's manual checkbox choices.
+      if (!selectionInitRef.current && list.length > 0) {
+        selectionInitRef.current = true;
+        setSelectedIds(new Set(list.map((c) => c.conceptId)));
+      }
+    } catch (e) {
+      setConceptsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConceptsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConcepts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // Group selected-able topics by source material for the checkbox tree.
+  const grouped = useMemo(() => {
+    const q = topicSearch.trim().toLowerCase();
+    const map = new Map<string, { key: string; materialName: string; materialId: string | null; items: ConceptMeta[] }>();
+    for (const c of concepts) {
+      if (
+        q &&
+        !(
+          c.conceptName.toLowerCase().includes(q) ||
+          (c.description ?? "").toLowerCase().includes(q) ||
+          (c.materialName ?? "").toLowerCase().includes(q)
+        )
+      )
+        continue;
+      const key = c.sourceMaterialId ?? `__none__${c.materialName ?? "Other"}`;
+      const entry = map.get(key) ?? {
+        key,
+        materialName: c.materialName ?? "Other / no source",
+        materialId: c.sourceMaterialId,
+        items: [],
+      };
+      entry.items.push(c);
+      map.set(key, entry);
+    }
+    return [...map.values()].sort((a, b) => b.items.length - a.items.length || a.materialName.localeCompare(b.materialName));
+  }, [concepts, topicSearch]);
+
+  const totalTopics = concepts.length;
+  const selectedCount = selectedIds.size;
+  const partialSelection = totalTopics > 0 && selectedCount > 0 && selectedCount < totalTopics;
+  const effectiveMax = Math.min(QUIZ_MAX_COUNT, Math.max(selectedCount, 1));
+  const clampedForSelection = Math.min(clampQuizCount(quizCount), effectiveMax);
+
+  const toggleConcept = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleMaterial = (items: ConceptMeta[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allOn = items.every((c) => next.has(c.conceptId));
+      if (allOn) for (const c of items) next.delete(c.conceptId);
+      else for (const c of items) next.add(c.conceptId);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedIds(new Set(concepts.map((c) => c.conceptId)));
+  const clearAll = () => setSelectedIds(new Set());
+  const selectWeak = () =>
+    setSelectedIds(new Set(concepts.filter((c) => c.currentScore === null || c.currentScore < 50).map((c) => c.conceptId)));
+  const selectUntested = () => setSelectedIds(new Set(concepts.filter((c) => c.currentScore === null).map((c) => c.conceptId)));
+
+  // Timer tick — runs only while a round is actively being taken.
+  const isSummary = !!activeQuiz && (currentIdx >= (activeQuiz?.questions.length ?? 0) || (quizCompleted && Object.keys(results).length >= (activeQuiz?.questions.length ?? 0)));
+  useEffect(() => {
+    if (!activeQuiz || quizStartAt === null || isSummary || timeUp) return;
+    const id = window.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - quizStartAt) / 1000);
+      setElapsedSec(elapsed);
+      if (timeLimitMin > 0 && elapsed >= timeLimitMin * 60) {
+        setTimeUp(true);
+        // Time's up: jump to summary so already-given answers are kept and
+        // the round can be reviewed. Nothing is auto-submitted.
+        setCurrentIdx(activeQuiz.questions.length);
+        window.clearInterval(id);
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeQuiz, quizStartAt, isSummary, timeUp, timeLimitMin]);
+
+  const timeLeftSec = timeLimitMin > 0 ? Math.max(0, timeLimitMin * 60 - elapsedSec) : null;
+
   const startQuiz = async () => {
+    if (totalTopics > 0 && selectedCount === 0) {
+      setError("Select at least one topic to start a quiz.");
+      return;
+    }
     setError(null);
     setGenerating(true);
     try {
+      // Partial checkbox selection scopes the adaptive pool server-side.
+      // Full selection sends no filter (identical + keeps idempotency reuse).
+      const payload: { count: number; conceptIds?: string[] } =
+        partialSelection
+          ? { count: clampedForSelection, conceptIds: [...selectedIds] }
+          : { count: clampQuizCount(quizCount) };
       const res = await fetch(`/api/projects/${projectId}/quiz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: clampQuizCount(quizCount) }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate quiz");
@@ -143,6 +309,10 @@ export default function QuizClient({
       setOpenResponse("");
       setShowFeedback(false);
       setQuizCompleted(false);
+      // (Re)start the practice timer for the new round.
+      setQuizStartAt(Date.now());
+      setElapsedSec(0);
+      setTimeUp(false);
       fetchQuizzes();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -194,6 +364,10 @@ export default function QuizClient({
       setSelectedOption("");
       setOpenResponse("");
       setShowFeedback(false);
+      // Reviewing history — timer is for live practice only.
+      setQuizStartAt(null);
+      setElapsedSec(0);
+      setTimeUp(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -306,6 +480,9 @@ export default function QuizClient({
     setError(null);
     setShowFeedback(false);
     setQuizCompleted(false);
+    setQuizStartAt(null);
+    setElapsedSec(0);
+    setTimeUp(false);
     fetchQuizzes();
   };
 
@@ -323,10 +500,18 @@ export default function QuizClient({
           ← All quizzes
         </button>
 
+        {timeUp && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+            Time&apos;s up — showing what you answered in time. Nothing was auto-submitted.
+          </div>
+        )}
         <div className="rounded-2xl border border-stone-200 bg-white p-6 text-center shadow-card sm:p-8">
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">Your score</p>
           <p className="tnum mt-2 text-5xl font-semibold tracking-tight text-stone-900">{avgScore}<span className="text-2xl text-stone-400">%</span></p>
           <p className="mt-2 text-sm text-stone-500">{correctCount} of {total} correct · {answered} answered</p>
+          {(quizStartAt !== null || elapsedSec > 0) && (
+            <p className="tnum mt-1 text-xs text-stone-400">Time taken: {formatClock(elapsedSec)}{timeLimitMin > 0 ? ` of ${timeLimitMin}:00` : ""}</p>
+          )}
           <div className="mt-3 flex justify-center">
             <Badge tone={done ? "success" : "warning"}>{done ? "completed" : "in progress"}</Badge>
           </div>
@@ -422,13 +607,26 @@ export default function QuizClient({
     const answeredFlags = activeQuiz.questions.map((q) => !!results[q.id]);
     return (
       <div className="fade-enter w-full space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <button onClick={resetToList} className="text-sm text-stone-500 transition-colors hover:text-stone-900">
             ← All quizzes
           </button>
-          <span className="tnum text-sm text-stone-500">
-            {currentIdx + 1} / {total}
-          </span>
+          <div className="flex items-center gap-2">
+            {quizStartAt !== null && (
+              <span
+                className={`tnum rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  timeLeftSec !== null && timeLeftSec <= 60 ? "bg-red-50 text-red-700 ring-1 ring-inset ring-red-200" : "bg-stone-100 text-stone-600"
+                }`}
+                title={timeLimitMin > 0 ? `Time left: ${formatClock(timeLeftSec ?? 0)}` : "Elapsed time (practice only)"}
+                aria-live="off"
+              >
+                ⏱ {formatClock(elapsedSec)}{timeLeftSec !== null ? ` left` : ""}
+              </span>
+            )}
+            <span className="tnum text-sm text-stone-500">
+              {currentIdx + 1} / {total}
+            </span>
+          </div>
         </div>
         <StepDots total={total} current={currentIdx} answered={answeredFlags} />
 
@@ -629,16 +827,156 @@ export default function QuizClient({
                   +
                 </button>
               </div>
-              <Button onClick={startQuiz} disabled={generating}>
+              <label className="flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-sm" title="Optional countdown per round (practice only)">
+                <span aria-hidden>⏱</span>
+                <span className="sr-only">Time limit</span>
+                <select
+                  value={timeLimitMin}
+                  onChange={(e) => setTimeLimitMin(Number(e.target.value))}
+                  disabled={generating}
+                  aria-label="Time limit"
+                  className="bg-transparent text-sm font-medium text-stone-700 focus:outline-none"
+                >
+                  {TIME_LIMIT_OPTIONS.map((m) => (
+                    <option key={m} value={m}>
+                      {m === 0 ? "No limit" : `${m} min`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Button onClick={startQuiz} disabled={generating || (totalTopics > 0 && selectedCount === 0)}>
                 {generating && <Spinner className="text-white" />}
-                {generating ? "Building your quiz…" : "Start quiz"}
+                {generating ? "Building your quiz…" : partialSelection ? `Start quiz (${clampedForSelection}q)` : "Start quiz"}
               </Button>
               <LinkButton href={`/projects/${projectId}/tutor`} variant="secondary">
                 Ask tutor first
               </LinkButton>
             </div>
+            {/* Topic scope picker — checkboxes grouped by material */}
+            <div className="mt-4 rounded-xl border border-stone-200 bg-stone-50/60 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-stone-900">
+                  Topics{" "}
+                  <span className="tnum font-normal text-stone-500" aria-live="polite">
+                    {totalTopics > 0 ? `${selectedCount} of ${totalTopics} selected` : ""}
+                  </span>
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" onClick={selectAll} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    All
+                  </button>
+                  <button type="button" onClick={selectWeak} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40" title="Weak (<50%) + untested">
+                    Weak only
+                  </button>
+                  <button type="button" onClick={selectUntested} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    Untested
+                  </button>
+                  <button type="button" onClick={clearAll} disabled={generating || conceptsLoading || selectedCount === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-stone-500">
+                Mixed across all your materials — untick anything to exclude it. Adaptive difficulty still picks your weakest within the selection.
+              </p>
+              {partialSelection && (
+                <p className="mt-1 text-xs text-sky-700">
+                  Only {selectedCount} topic{selectedCount === 1 ? "" : "s"} selected — you&apos;ll get up to {clampedForSelection} question{clampedForSelection === 1 ? "" : "s"} (1 per topic).
+                </p>
+              )}
+              {totalTopics > 6 && (
+                <input
+                  type="search"
+                  value={topicSearch}
+                  onChange={(e) => setTopicSearch(e.target.value)}
+                  placeholder="Filter topics…"
+                  aria-label="Filter topics"
+                  className="mt-2.5 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600"
+                />
+              )}
+              <div className="mt-2.5">
+                {conceptsLoading ? (
+                  <div className="space-y-2" aria-label="Loading topics">
+                    <div className="skeleton h-10 w-full rounded-lg" />
+                    <div className="skeleton h-10 w-11/12 rounded-lg" />
+                  </div>
+                ) : conceptsError ? (
+                  <p className="text-xs text-amber-700">
+                    Couldn&apos;t load topics ({conceptsError}) — quiz will use all topics.{" "}
+                    <button onClick={fetchConcepts} className="font-medium underline">Retry</button>
+                  </p>
+                ) : totalTopics === 0 ? (
+                  <p className="text-xs text-stone-500">No topics yet — upload and process a PDF first. Quiz will use adaptive defaults.</p>
+                ) : grouped.length === 0 ? (
+                  <p className="text-xs text-stone-500">No topics match &quot;{topicSearch}&quot;.</p>
+                ) : (
+                  <ul className="max-h-72 space-y-2 overflow-y-auto pr-0.5">
+                    {grouped.map((g) => {
+                      const allOn = g.items.every((c) => selectedIds.has(c.conceptId));
+                      const someOn = !allOn && g.items.some((c) => selectedIds.has(c.conceptId));
+                      const isCollapsed = collapsed[g.key] ?? false;
+                      return (
+                        <li key={g.key} className="overflow-hidden rounded-xl border border-stone-200 bg-white">
+                          <div className="flex items-center gap-2.5 px-3 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={allOn}
+                              ref={(el) => {
+                                if (el) el.indeterminate = someOn;
+                              }}
+                              onChange={() => toggleMaterial(g.items)}
+                              disabled={generating}
+                              aria-label={`Select all topics from ${g.materialName}`}
+                              className="h-4 w-4 shrink-0 accent-sky-600"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setCollapsed((p) => ({ ...p, [g.key]: !isCollapsed }))}
+                              aria-expanded={!isCollapsed}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-stone-800" title={g.materialName}>
+                                {g.materialName}
+                              </span>
+                              <span className="tnum shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-semibold text-stone-500">
+                                {g.items.filter((c) => selectedIds.has(c.conceptId)).length}/{g.items.length}
+                              </span>
+                              <span aria-hidden className={`text-xs text-stone-400 transition-transform ${isCollapsed ? "" : "rotate-180"}`}>▾</span>
+                            </button>
+                          </div>
+                          {!isCollapsed && (
+                            <ul className="space-y-0.5 border-t border-stone-100 px-3 py-2">
+                              {g.items.map((c) => {
+                                const on = selectedIds.has(c.conceptId);
+                                return (
+                                  <li key={c.conceptId}>
+                                    <label className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${on ? "hover:bg-sky-50" : "opacity-70 hover:bg-stone-100"}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={on}
+                                        onChange={() => toggleConcept(c.conceptId)}
+                                        disabled={generating}
+                                        className="h-4 w-4 shrink-0 accent-sky-600"
+                                      />
+                                      <span className="min-w-0 flex-1 truncate text-[13px] text-stone-800" title={c.description ?? c.conceptName}>
+                                        {c.conceptName}
+                                      </span>
+                                      <Badge tone={topicTone(c.currentScore)}>{topicLabel(c.currentScore)}</Badge>
+                                    </label>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
             {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
-            {generating && <p className="mt-2 text-xs text-stone-400">Picking concepts by mastery + generating questions…</p>}
+            {generating && <p className="mt-2 text-xs text-stone-400">Picking from your selected topics by mastery + generating questions…</p>}
           </div>
         </div>
       </div>

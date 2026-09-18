@@ -49,7 +49,8 @@ the closed learning loop.
    `005_conversation_summary.sql`, then `006_embeddings_gemini_768.sql`,
    then `007_practice.sql`, `008_practice_mcq.sql`,
    `009_practice_sections.sql`, `010_material_dedup.sql`,
-   `011_material_file_size.sql`, then `012_embeddings_gemini2_768.sql`
+   `011_material_file_size.sql`, then `012_embeddings_gemini2_768.sql`,
+   `013_conversation_pinning.sql`, `014_concepts_dedupe.sql`
    in order via `npm run migrate` (recommended) or the
    Supabase SQL Editor, ensuring the `materials` Storage bucket exists (private).
 

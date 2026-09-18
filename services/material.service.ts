@@ -8,6 +8,7 @@ import { logAiOperation } from "@/lib/ai/observability";
 import { extractImageText, isImageFile, normalizeImageMime } from "@/lib/ocr/imageOcr";
 import { extractScannedPdfText, joinSegmentsForPrompt } from "@/lib/ocr/scannedPdfOcr";
 import { createHash } from "node:crypto";
+import { filterFreshConcepts } from "@/lib/concepts/normalize";
 import {
   MAX_MATERIALS_PER_USER,
   MAX_STORAGE_BYTES_PER_USER,
@@ -657,14 +658,50 @@ export async function processMaterial(materialId: string) {
     }
 
     if (concepts.length > 0) {
-      const conceptRows = concepts.map((c) => ({
-        project_id: projectId,
-        name: c.name,
-        description: c.description,
-        source_material_id: materialId,
-      }));
-      for (const row of conceptRows) {
-        const { error: cErr } = await db.from("concepts").insert(row);
+      // Replace-not-append: every reprocess (UI Retry, re-upload,
+      // embedding-model reindex) used to append up to 8 more rows for the
+      // same material, which showed up as repeated topics on the Concepts
+      // page. Concepts WITH quiz questions are kept as evidence history (a
+      // delete would cascade to questions/answers); everything else from a
+      // previous run is replaced, and fresh names matching a kept concept
+      // (or each other) are skipped.
+      let keptNames: string[] = [];
+      try {
+        const { data: existing } = await db
+          .from("concepts")
+          .select("id, name")
+          .eq("project_id", projectId)
+          .eq("source_material_id", materialId);
+        const existingRows = (existing ?? []) as Array<{ id: string; name: string }>;
+        if (existingRows.length > 0) {
+          const ids = existingRows.map((c) => c.id);
+          const { data: refQs } = await db.from("questions").select("concept_id").in("concept_id", ids);
+          const referenced = new Set(((refQs ?? []) as Array<{ concept_id: string }>).map((q) => q.concept_id));
+          keptNames = existingRows.filter((c) => referenced.has(c.id)).map((c) => c.name);
+          const unreferenced = ids.filter((id) => !referenced.has(id));
+          if (unreferenced.length > 0) {
+            // Explicit child deletes first (FKs also cascade, this is belt
+            // and braces for DBs with older constraints).
+            await db.from("concept_mastery").delete().in("concept_id", unreferenced);
+            await db.from("mastery_history").delete().in("concept_id", unreferenced);
+            const { error: delErr } = await db.from("concepts").delete().in("id", unreferenced);
+            if (delErr) console.error("Stale concept cleanup failed (non-fatal):", delErr);
+          }
+        }
+      } catch (e) {
+        console.error("Stale concept cleanup failed (non-fatal, continuing with deduped insert):", e);
+      }
+      const fresh = filterFreshConcepts(
+        concepts.map((c) => ({ name: c.name.trim(), description: c.description })),
+        keptNames
+      );
+      for (const c of fresh) {
+        const { error: cErr } = await db.from("concepts").insert({
+          project_id: projectId,
+          name: c.name,
+          description: c.description,
+          source_material_id: materialId,
+        });
         if (cErr) console.error("Concept insert failed:", cErr);
       }
     }

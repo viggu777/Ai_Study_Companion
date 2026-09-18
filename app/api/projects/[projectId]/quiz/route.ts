@@ -34,11 +34,13 @@ export async function POST(
       return NextResponse.json({ error: parsed.error ?? "Invalid body" }, { status: 400 });
     }
     const count = parsed.data?.count;
+    const conceptIds = parsed.data?.conceptIds;
+    const materialIds = parsed.data?.materialIds;
     // Quiz generation costs an LLM call — 5/min per user (double-clicks are
     // also absorbed by the idempotency guard in generateQuiz).
     const rl = checkRateLimit(`quiz-generate:${userId}`, 5, 60_000);
     if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
-    const result = await generateQuiz(projectId, { count });
+    const result = await generateQuiz(projectId, { count, conceptIds, materialIds });
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

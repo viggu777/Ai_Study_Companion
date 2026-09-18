@@ -20,8 +20,9 @@
  *    ('gemini-embedding-2'), so partially migrated estates converge.
  *  - Repeatable: re-running only picks up still-FAILED parked rows.
  *  - No duplicates: processMaterial() deletes a material's stale chunks
- *    before inserting fresh ones, and the claim guard makes concurrent
- *    workers a safe no-op.
+ *    before inserting fresh ones and replaces (not appends) its unreferenced
+ *    concepts — re-embedding a material no longer multiplies its topics.
+ *    The claim guard makes concurrent workers a safe no-op.
  *  - Materials stuck in PROCESSING (crashed worker) are NOT auto-claimed —
  *    use Retry in the UI for those (it resets to QUEUED first).
  *

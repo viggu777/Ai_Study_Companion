@@ -261,10 +261,16 @@ function pickDifficultyAndType(s: {
   return { difficulty, type };
 }
 
+export interface QuizScopeFilter {
+  conceptIds?: string[];
+  materialIds?: string[];
+}
+
 export async function selectAdaptiveConcepts(
   projectId: string,
   userId: string,
-  count: number = DEFAULT_QUIZ_SIZE
+  count: number = DEFAULT_QUIZ_SIZE,
+  scope?: QuizScopeFilter
 ): Promise<SelectionCandidate[]> {
   const db = await getDb();
   // Prefer concepts sourced from a live material. Orphaned concepts
@@ -274,7 +280,22 @@ export async function selectAdaptiveConcepts(
   const { data: concepts } = await db.from("concepts").select("id, name, description, source_material_id").eq("project_id", projectId);
   const allRows = (concepts ?? []) as Array<ConceptRow & { source_material_id: string | null }>;
   const sourced = allRows.filter((c) => c.source_material_id !== null);
-  const rows: ConceptRow[] = (sourced.length > 0 ? sourced : allRows).map(({ source_material_id: _omit, ...c }) => c);
+  let scoped: Array<ConceptRow & { source_material_id: string | null }> = sourced.length > 0 ? sourced : allRows;
+  // Topic scoping (checkbox selection from the Quiz setup card): narrow the
+  // adaptive pool to the chosen materials and/or concepts. Adaptive scoring
+  // still applies *within* the subset, so weakest-first keeps working.
+  const materialSet = scope?.materialIds && scope.materialIds.length > 0 ? new Set(scope.materialIds) : null;
+  const conceptSet = scope?.conceptIds && scope.conceptIds.length > 0 ? new Set(scope.conceptIds) : null;
+  if (materialSet) {
+    scoped = scoped.filter((c) => c.source_material_id !== null && materialSet.has(c.source_material_id));
+  }
+  if (conceptSet) {
+    scoped = scoped.filter((c) => conceptSet.has(c.id));
+  }
+  if ((materialSet || conceptSet) && scoped.length === 0) {
+    throw new Error("No concepts match your selection — pick at least one topic with concepts");
+  }
+  const rows: ConceptRow[] = scoped.map(({ source_material_id: _omit, ...c }) => c);
   if (rows.length === 0) throw new Error("No concepts available for quiz generation — upload and process material first");
 
   const stats = await buildConceptStats(projectId, userId, rows);
@@ -306,7 +327,7 @@ export async function selectAdaptiveConcepts(
 
 export async function generateQuiz(
   projectId: string,
-  options?: { count?: number }
+  options?: { count?: number; conceptIds?: string[]; materialIds?: string[] }
 ): Promise<{ quiz: { id: string; project_id: string; status: string; created_at: string }; questions: Array<{ id: string; concept_id: string; type: string; difficulty: string; question: string; options: unknown; answered: boolean }> }> {
   const userId = await getCurrentUserId();
   const db = await getDb();
@@ -324,10 +345,16 @@ export async function generateQuiz(
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
 
   const count = clampQuizCount(options?.count);
+  const hasScope =
+    (options?.conceptIds && options.conceptIds.length > 0) ||
+    (options?.materialIds && options.materialIds.length > 0);
 
   // Idempotency guard against double-click / retry storms: if the user already
   // has a quiz created in the last 2 minutes with zero answers, return it
-  // instead of spending another LLM generation.
+  // instead of spending another LLM generation. Scoped (topic-filtered)
+  // requests always generate fresh — reusing an unscoped recent quiz would
+  // return the wrong topics.
+  if (!hasScope) {
   try {
     const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data: recent } = await db
@@ -358,8 +385,12 @@ export async function generateQuiz(
   } catch {
     // Guard is best-effort; fall through to normal generation on any error.
   }
+  } // end if (!hasScope) idempotency guard
 
-  const selected = await selectAdaptiveConcepts(projectId, userId, count);
+  const selected = await selectAdaptiveConcepts(projectId, userId, count, {
+    conceptIds: options?.conceptIds,
+    materialIds: options?.materialIds,
+  });
 
   // Build prompt and call AIService
   const userPrompt = buildQuizUserPrompt({
@@ -564,7 +595,13 @@ export async function generateQuiz(
     eventType: "QUIZ_STARTED",
     entityType: "quiz",
     entityId: quizId,
-    metadata: { count: rowsToInsert.length, concepts: expectedIds },
+    metadata: {
+      count: rowsToInsert.length,
+      concepts: expectedIds,
+      scoped: hasScope,
+      scopeConceptCount: options?.conceptIds?.length ?? null,
+      scopeMaterialCount: options?.materialIds?.length ?? null,
+    },
   });
 
   return {
