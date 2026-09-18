@@ -372,12 +372,15 @@ export interface AdminAiUsage {
   totalCalls: number;
   perFeature: Record<string, number>;
   perModel: Record<string, number>;
+  tokensPerFeature: Record<string, { calls: number; tokensIn: number; tokensOut: number; cost: number }>;
   avgLatencyMs: number | null;
   errorRate: number | null;
   totalCost: number | null;
   totalTokensIn: number | null;
   totalTokensOut: number | null;
+  pricedCalls: number;
   recentFailures: Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }>;
+  recentCalls: Array<{ id: string; feature: string; model: string; latencyMs: number | null; success: boolean; tokensIn: number | null; tokensOut: number | null; estimatedCost: number | null; created_at: string }>;
 }
 
 export async function getAdminAiUsage(): Promise<AdminAiUsage> {
@@ -399,6 +402,7 @@ export async function getAdminAiUsage(): Promise<AdminAiUsage> {
   const totalCalls = rows.length;
   const perFeature: Record<string, number> = {};
   const perModel: Record<string, number> = {};
+  const tokensPerFeature: AdminAiUsage["tokensPerFeature"] = {};
   let latSum = 0;
   let latCnt = 0;
   let fails = 0;
@@ -409,9 +413,32 @@ export async function getAdminAiUsage(): Promise<AdminAiUsage> {
   let tokensInCnt = 0;
   let tokensOutCnt = 0;
   const recentFailures: AdminAiUsage["recentFailures"] = [];
+  const recentCalls: AdminAiUsage["recentCalls"] = [];
   for (const r of rows) {
     perFeature[r.feature] = (perFeature[r.feature] ?? 0) + 1;
     perModel[r.model] = (perModel[r.model] ?? 0) + 1;
+    const tIn = r.tokens_in !== null && r.tokens_in !== undefined ? Number(r.tokens_in) : null;
+    const tOut = r.tokens_out !== null && r.tokens_out !== undefined ? Number(r.tokens_out) : null;
+    const costRaw = r.estimated_cost !== null && r.estimated_cost !== undefined ? Number(r.estimated_cost) : null;
+    const cost = costRaw !== null && !Number.isNaN(costRaw) ? costRaw : null;
+    const feat = (tokensPerFeature[r.feature] ??= { calls: 0, tokensIn: 0, tokensOut: 0, cost: 0 });
+    feat.calls++;
+    if (tIn !== null && !Number.isNaN(tIn)) feat.tokensIn += tIn;
+    if (tOut !== null && !Number.isNaN(tOut)) feat.tokensOut += tOut;
+    if (cost !== null) feat.cost = Math.round((feat.cost + cost) * 1_000_000) / 1_000_000;
+    if (recentCalls.length < 20) {
+      recentCalls.push({
+        id: r.id,
+        feature: r.feature,
+        model: r.model,
+        latencyMs: r.latency_ms !== null ? Number(r.latency_ms) : null,
+        success: r.success,
+        tokensIn: tIn,
+        tokensOut: tOut,
+        estimatedCost: cost,
+        created_at: r.created_at,
+      });
+    }
     if (r.latency_ms !== null) {
       latSum += Number(r.latency_ms);
       latCnt++;
@@ -440,12 +467,15 @@ export async function getAdminAiUsage(): Promise<AdminAiUsage> {
     totalCalls,
     perFeature,
     perModel,
+    tokensPerFeature,
     avgLatencyMs: latCnt > 0 ? Math.round(latSum / latCnt) : null,
     errorRate: totalCalls > 0 ? Math.round((fails / totalCalls) * 10000) / 10000 : null,
     totalCost: costCnt > 0 ? Math.round(costSum * 1_000_000) / 1_000_000 : null,
     totalTokensIn: tokensInCnt > 0 ? tokensInSum : null,
     totalTokensOut: tokensOutCnt > 0 ? tokensOutSum : null,
+    pricedCalls: costCnt,
     recentFailures,
+    recentCalls,
   };
 }
 
