@@ -4,7 +4,7 @@ import Link from "next/link";
 import { listSpaces } from "@/services/project.service";
 import { getGlobalAnalytics } from "@/services/analytics.service";
 import { getDashboardData, type DashboardData } from "@/services/dashboard.service";
-import { ArrowRightIcon, ChartIcon, ChatIcon, FolderIcon, PlusIcon, QuizIcon, SparkIcon, TargetIcon, TrendUpIcon } from "@/components/icons";
+import { ArrowRightIcon, ChatIcon, FolderIcon, PlusIcon, QuizIcon, SparkIcon, TargetIcon, TrendUpIcon } from "@/components/icons";
 import { Badge, Card, EmptyState, LinkButton, Stat } from "@/components/ui";
 
 function formatDate(value: string | null): string {
@@ -173,7 +173,7 @@ export default async function DashboardPage() {
         )}
       </section>
 
-      {/* 3. Overall Progress — reuses existing global analytics/mastery calculations */}
+      {/* 3. Overall Progress — learning outcomes only (infra stats live in /admin) */}
       <section aria-label="Overall progress" className="mt-8">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-[0.12em] text-stone-500">
           Overall Progress
@@ -192,60 +192,77 @@ export default async function DashboardPage() {
                 icon={<FolderIcon className="h-[18px] w-[18px]" />}
               />
               <Stat
-                label="Quiz attempts"
+                label="Quizzes taken"
                 value={global.totalQuizAttempts}
                 sub={`${global.totalQuestionsAnswered} questions answered`}
                 icon={<QuizIcon className="h-[18px] w-[18px]" />}
               />
               <Stat
-                label="Tutor interactions"
+                label="Tutor conversations"
                 value={global.totalTutorInteractions}
-                sub="Grounded answers from your materials"
+                sub="Questions explained from your materials"
                 icon={<ChatIcon className="h-[18px] w-[18px]" />}
               />
               <Stat
                 label="Average mastery"
-                value={global.avgMastery !== null ? global.avgMastery.toFixed(1) : "—"}
+                value={
+                  global.avgMastery !== null ? `${Math.round(global.avgMastery)}%` : "—"
+                }
                 sub={`Across ${global.totalConcepts} concepts`}
                 icon={<TargetIcon className="h-[18px] w-[18px]" />}
               />
               <Stat
-                label="Study activity"
-                value={global.aiUsage.totalCalls}
+                label="Needs attention"
+                value={attentionItems.length}
                 sub={
-                  global.aiUsage.errorRate !== null
-                    ? `${(global.aiUsage.errorRate * 100).toFixed(1)}% error rate`
-                    : "No errors recorded"
+                  attentionItems.length > 0
+                    ? "Weak concepts to review next"
+                    : "Nothing weak right now"
                 }
-                icon={<SparkIcon className="h-[18px] w-[18px]" />}
+                icon={<TrendUpIcon className="h-[18px] w-[18px]" />}
               />
               <Stat
-                label="Avg response time"
-                value={global.aiUsage.avgLatencyMs !== null ? `${global.aiUsage.avgLatencyMs}ms` : "—"}
+                label="Next actions"
+                value={nextActions.length}
                 sub={
-                  global.aiUsage.totalEstimatedCost !== null
-                    ? `Est. cost $${global.aiUsage.totalEstimatedCost}`
-                    : "Across all features"
+                  nextActions.length > 0
+                    ? "Active recommendations waiting"
+                    : "Complete a quiz to get guidance"
                 }
-                icon={<ChartIcon className="h-[18px] w-[18px]" />}
+                icon={<SparkIcon className="h-[18px] w-[18px]" />}
               />
             </div>
 
             <Card className="p-5">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-semibold text-stone-900">Activity by feature</h3>
-                <span className="text-xs text-stone-400">Live from your study activity</span>
+                <h3 className="text-sm font-semibold text-stone-900">Learning momentum</h3>
+                <span className="text-xs text-stone-400">
+                  {global.activeProjects > 0
+                    ? `${global.activeProjects} project${global.activeProjects === 1 ? "" : "s"} active this week`
+                    : "Study this week to build momentum"}
+                </span>
               </div>
-              {Object.keys(global.aiUsage.perFeature).length > 0 ? (
+              {hasProjects ? (
                 <div className="flex flex-wrap gap-2">
-                  {Object.entries(global.aiUsage.perFeature).map(([feat, count]) => (
-                    <Badge key={feat} tone="accent" className="tnum">
-                      {feat} · {count}
+                  <Badge tone="accent" className="tnum">
+                    {global.totalConcepts} concepts tracked
+                  </Badge>
+                  <Badge tone={attentionItems.length > 0 ? "danger" : "neutral"} className="tnum">
+                    {attentionItems.length} need attention
+                  </Badge>
+                  <Badge tone="neutral" className="tnum">
+                    {nextActions.length} next actions
+                  </Badge>
+                  {continueLearning && (
+                    <Badge tone="neutral" className="tnum">
+                      Last active {formatDate(continueLearning.lastActivityAt)}
                     </Badge>
-                  ))}
+                  )}
                 </div>
               ) : (
-                <p className="text-sm text-stone-500">No AI calls yet — try the Tutor or generate a quiz.</p>
+                <p className="text-sm text-stone-500">
+                  Create a space and project, then upload a PDF to start tracking progress.
+                </p>
               )}
             </Card>
           </div>
