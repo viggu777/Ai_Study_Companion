@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Button, LinkButton, inputClass } from "@/components/ui";
+import { Badge, Button, inputClass } from "@/components/ui";
 import TutorMarkdown from "@/components/TutorMarkdown";
 import {
   ArrowRightIcon,
@@ -11,10 +12,25 @@ import {
   ChatIcon,
   PinIcon,
   PlusIcon,
+  PracticeIcon,
   QuizIcon,
   SparkIcon,
   TrashIcon,
 } from "@/components/icons";
+import {
+  QUIZ_DEFAULT_COUNT,
+  QUIZ_MAX_COUNT,
+  QUIZ_MIN_COUNT,
+  clampQuizCount,
+} from "@/ai/quiz";
+import {
+  PRACTICE_DEFAULT_COUNT,
+  PRACTICE_LEVEL_LABEL,
+  PRACTICE_MAX_COUNT,
+  PRACTICE_MIN_COUNT,
+  clampPracticeCount,
+  type PracticeLevel,
+} from "@/ai/practice";
 
 interface Citation {
   materialId: string;
@@ -39,8 +55,11 @@ interface MessageRow {
   created_at: string;
   parsed?: TutorResponse | null;
   /** local-only navigation card (never persisted server-side) */
-  kind?: "quiz-card" | "flashcard-card";
+  kind?: "quiz-card" | "flashcard-card" | "practice-card";
 }
+
+/** Destination of the start-setup dialog (pick options → OK → go to page). */
+type StartKind = "quiz" | "practice" | "flashcards";
 
 interface ConversationSummary {
   id: string;
@@ -74,6 +93,14 @@ function isQuizIntent(text: string): boolean {
 /** "flashcards / flip cards / revise with cards" → go to Flashcards page */
 function isFlashcardIntent(text: string): boolean {
   return /\b(flashcard|flashcards|flip[\s-]?cards?|revise with cards|memorize)\b/i.test(text);
+}
+
+/**
+ * "practice questions / start practice / take an assignment" → Practice page.
+ * Checked BEFORE isQuizIntent (which also matches "practice questions").
+ */
+function isPracticeIntent(text: string): boolean {
+  return /\b(practice(\s+(questions|assignment|paper|test))?|start practice|take practice|assignment)\b/i.test(text);
 }
 
 const SUGGESTIONS = [
@@ -266,6 +293,157 @@ function DeleteConfirmDialog({
   );
 }
 
+/* ---------- start-setup dialog (pick options → OK → go to page) ---------- */
+
+const FLASHCARD_COUNT_OPTIONS = [5, 10, 15, 20];
+
+function StartDialog({
+  kind,
+  quizCount,
+  setQuizCount,
+  practiceCount,
+  setPracticeCount,
+  practiceLevel,
+  setPracticeLevel,
+  flashCount,
+  setFlashCount,
+  onCancel,
+  onConfirm,
+}: {
+  kind: StartKind;
+  quizCount: number;
+  setQuizCount: (n: number) => void;
+  practiceCount: number;
+  setPracticeCount: (n: number) => void;
+  practiceLevel: PracticeLevel;
+  setPracticeLevel: (l: PracticeLevel) => void;
+  flashCount: number;
+  setFlashCount: (n: number) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const meta =
+    kind === "quiz"
+      ? { title: "Start a quiz?", body: "Pick how many questions — they're chosen from your weakest concepts.", ok: "Start quiz" }
+      : kind === "practice"
+        ? { title: "Start practice?", body: "Pick how many questions and at which level.", ok: "Start practice" }
+        : { title: "Build flashcards?", body: "Pick how many cards — built from your weakest concepts.", ok: "Build deck" };
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={meta.title}
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-[15px] font-semibold text-stone-900">{meta.title}</h3>
+        <p className="mt-1 text-sm leading-relaxed text-stone-600">{meta.body}</p>
+
+        {kind === "quiz" && (
+          <div className="mt-4 flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
+            <button
+              type="button"
+              onClick={() => setQuizCount(clampQuizCount(quizCount - 1))}
+              disabled={quizCount <= QUIZ_MIN_COUNT}
+              aria-label="Fewer questions"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              −
+            </button>
+            <span className="tnum min-w-16 flex-1 text-center text-sm font-semibold text-stone-900" aria-live="polite">
+              {quizCount} {quizCount === 1 ? "question" : "questions"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setQuizCount(clampQuizCount(quizCount + 1))}
+              disabled={quizCount >= QUIZ_MAX_COUNT}
+              aria-label="More questions"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              +
+            </button>
+          </div>
+        )}
+
+        {kind === "practice" && (
+          <div className="mt-4 space-y-2.5">
+            <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
+              <button
+                type="button"
+                onClick={() => setPracticeCount(clampPracticeCount(practiceCount - 1))}
+                disabled={practiceCount <= PRACTICE_MIN_COUNT}
+                aria-label="Fewer questions"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                −
+              </button>
+              <span className="tnum min-w-16 flex-1 text-center text-sm font-semibold text-stone-900" aria-live="polite">
+                {practiceCount} {practiceCount === 1 ? "question" : "questions"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPracticeCount(clampPracticeCount(practiceCount + 1))}
+                disabled={practiceCount >= PRACTICE_MAX_COUNT}
+                aria-label="More questions"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Practice level">
+              {(Object.keys(PRACTICE_LEVEL_LABEL) as PracticeLevel[]).map((lv) => (
+                <button
+                  key={lv}
+                  type="button"
+                  onClick={() => setPracticeLevel(lv)}
+                  aria-pressed={practiceLevel === lv}
+                  className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
+                    practiceLevel === lv ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
+                  }`}
+                >
+                  {PRACTICE_LEVEL_LABEL[lv]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {kind === "flashcards" && (
+          <div className="mt-4 flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of flashcards">
+            {FLASHCARD_COUNT_OPTIONS.map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setFlashCount(n)}
+                aria-pressed={flashCount === n}
+                className={`flex-1 rounded-md px-2 py-1.5 text-xs font-semibold transition-colors ${
+                  flashCount === n ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={onConfirm}>
+            {meta.ok}
+            <ArrowRightIcon className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- memoized message row (avoids re-rendering the whole thread on each keystroke) ---------- */
 
 const MessageItem = memo(function MessageItem({
@@ -273,24 +451,31 @@ const MessageItem = memo(function MessageItem({
   isLatestAssistant,
   loading,
   copiedId,
-  projectId,
   onSubmitText,
   onOpenSources,
   onCopy,
   onRegenerate,
   onFocusComposer,
+  onOpenStart,
 }: {
   m: MessageRow;
   isLatestAssistant: boolean;
   loading: boolean;
   copiedId: string | null;
-  projectId: string;
   onSubmitText: (text: string) => void;
   onOpenSources: (citations: Citation[]) => void;
   onCopy: (id: string, text: string) => void;
   onRegenerate: () => void;
   onFocusComposer: () => void;
+  onOpenStart: (kind: StartKind) => void;
 }) {
+  // Quick-action pills: setup flows open the picker dialog, the rest send as chat.
+  const handleQuickAction = (label: string, prompt: string) => {
+    if (label === "Quiz me") onOpenStart("quiz");
+    else if (label === "Practice") onOpenStart("practice");
+    else if (label === "Flashcards") onOpenStart("flashcards");
+    else onSubmitText(prompt);
+  };
   if (m.role === "user") {
     return (
       <div className="flex justify-end">
@@ -315,10 +500,34 @@ const MessageItem = memo(function MessageItem({
             I&apos;ll test you with adaptive questions picked from your weakest concepts — difficulty adjusts to your answers.
           </p>
           <div className="mt-4">
-            <LinkButton href={`/projects/${projectId}/quiz`}>
+            <Button size="sm" onClick={() => onOpenStart("quiz")}>
               Start quiz
               <ArrowRightIcon className="h-4 w-4" />
-            </LinkButton>
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Local practice-navigation card
+  if (m.kind === "practice-card") {
+    return (
+      <div className="flex gap-3">
+        <AssistantAvatar />
+        <div className="min-w-0 flex-1 rounded-2xl border border-stone-200 bg-stone-50 p-5">
+          <div className="flex items-center gap-2">
+            <PracticeIcon className="h-5 w-5 text-stone-700" />
+            <p className="text-[15px] font-semibold text-stone-900">Ready for deep practice?</p>
+          </div>
+          <p className="mt-1.5 text-sm leading-relaxed text-stone-600">
+            I&apos;ll build an exam-style paper from your weak concepts — explain, reason, and apply.
+          </p>
+          <div className="mt-4">
+            <Button size="sm" onClick={() => onOpenStart("practice")}>
+              Open practice
+              <ArrowRightIcon className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </div>
@@ -339,10 +548,10 @@ const MessageItem = memo(function MessageItem({
             I&apos;ll build a flip-card deck from your weakest concepts — flip, mark known, and shuffle.
           </p>
           <div className="mt-4">
-            <LinkButton href={`/projects/${projectId}/flashcards`}>
+            <Button size="sm" onClick={() => onOpenStart("flashcards")}>
               Open flashcards
               <ArrowRightIcon className="h-4 w-4" />
-            </LinkButton>
+            </Button>
           </div>
         </div>
       </div>
@@ -384,7 +593,7 @@ const MessageItem = memo(function MessageItem({
               <button
                 key={a.label}
                 type="button"
-                onClick={() => onSubmitText(a.prompt)}
+                onClick={() => handleQuickAction(a.label, a.prompt)}
                 disabled={loading}
                 className="shrink-0 whitespace-nowrap rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-card transition-colors hover:border-sky-600/40 hover:bg-sky-50/60 hover:text-stone-800 disabled:opacity-50"
               >
@@ -558,6 +767,31 @@ export default function TutorClient({
     () => messagesSnapshot.current.filter((m) => !m.id.startsWith("temp-user")),
     []
   );
+  const router = useRouter();
+
+  /* ---------- start-setup dialog (pick options → OK → go to page) ---------- */
+  const [startKind, setStartKind] = useState<StartKind | null>(null);
+  const [startQuizCount, setStartQuizCount] = useState<number>(QUIZ_DEFAULT_COUNT);
+  const [startPracticeCount, setStartPracticeCount] = useState<number>(PRACTICE_DEFAULT_COUNT);
+  const [startPracticeLevel, setStartPracticeLevel] = useState<PracticeLevel>("MIXED");
+  const [startFlashCount, setStartFlashCount] = useState<number>(10);
+
+  const openStart = useCallback((kind: StartKind) => {
+    setError(null);
+    setStartKind(kind);
+  }, []);
+
+  const confirmStart = useCallback(() => {
+    if (!startKind) return;
+    const base =
+      startKind === "quiz"
+        ? `/projects/${projectId}/quiz?count=${clampQuizCount(startQuizCount)}&start=1`
+        : startKind === "practice"
+          ? `/projects/${projectId}/practice?count=${clampPracticeCount(startPracticeCount)}&level=${startPracticeLevel}&start=1`
+          : `/projects/${projectId}/flashcards?count=${startFlashCount}&start=1`;
+    setStartKind(null);
+    router.push(base);
+  }, [startKind, projectId, startQuizCount, startPracticeCount, startPracticeLevel, startFlashCount, router]);
 
   // Scroll ONLY the thread pane. (The old bottomRef.scrollIntoView() scrolled
   // every ancestor — including the outer <main> — shoving the chat upward.)
@@ -811,11 +1045,34 @@ export default function TutorClient({
     ]);
   };
 
+  const pushPracticeCard = (q: string) => {
+    const now = new Date().toISOString();
+    setMessages((prev) => [
+      ...prev,
+      { id: `user-${Date.now()}`, role: "user", content: q, citations: null, created_at: now },
+      {
+        id: `practice-card-${Date.now()}`,
+        role: "assistant",
+        content: "",
+        citations: [],
+        created_at: now,
+        kind: "practice-card",
+      },
+    ]);
+  };
+
   const submitText = useCallback(
     async (raw: string) => {
       const q = raw.trim();
       if (!q || loading) return;
       setError(null);
+
+      // Practice intent first (isQuizIntent also matches "practice questions")
+      if (isPracticeIntent(q)) {
+        setQuestion("");
+        pushPracticeCard(q);
+        return;
+      }
 
       // Quiz intent → navigate to the Quiz page instead of asking the tutor
       if (isQuizIntent(q)) {
@@ -982,6 +1239,10 @@ export default function TutorClient({
   }, []);
 
   const applySuggestion = (s: string) => {
+    if (isPracticeIntent(s)) {
+      pushPracticeCard(s);
+      return;
+    }
     if (isQuizIntent(s)) {
       pushQuizCard(s);
       return;
@@ -1301,7 +1562,6 @@ export default function TutorClient({
                   <MessageItem
                     key={m.id}
                     m={m}
-                    projectId={projectId}
                     isLatestAssistant={m.id === lastAssistantId}
                     loading={loading}
                     copiedId={copiedId}
@@ -1310,6 +1570,7 @@ export default function TutorClient({
                     onCopy={copyAnswer}
                     onRegenerate={regenerate}
                     onFocusComposer={focusComposer}
+                    onOpenStart={openStart}
                   />
                 ))}
 
@@ -1478,6 +1739,22 @@ export default function TutorClient({
             if (!deleting) setDeleteTarget(null);
           }}
           onConfirm={confirmDelete}
+        />
+      )}
+
+      {startKind && (
+        <StartDialog
+          kind={startKind}
+          quizCount={startQuizCount}
+          setQuizCount={setStartQuizCount}
+          practiceCount={startPracticeCount}
+          setPracticeCount={setStartPracticeCount}
+          practiceLevel={startPracticeLevel}
+          setPracticeLevel={setStartPracticeLevel}
+          flashCount={startFlashCount}
+          setFlashCount={setStartFlashCount}
+          onCancel={() => setStartKind(null)}
+          onConfirm={confirmStart}
         />
       )}
     </div>
