@@ -82,3 +82,36 @@
 .tnum {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- Tutor rich markdown (GFM tables + KaTeX) ---- */
+
+.tutor-markdown .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0.25rem;
+  margin: 0.5rem 0;
+}
+
+.tutor-markdown .katex-display > .katex {
+  white-space: normal;
+}
+
+.tutor-markdown .katex {
+  font-size: 1.02em;
+  text-rendering: auto;
+}
+
+/* Nested lists keep indentation */
+.tutor-markdown ul ul,
+.tutor-markdown ol ol,
+.tutor-markdown ul ol,
+.tutor-markdown ol ul {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+/* Task-list checkboxes from GFM */
+.tutor-markdown input[type="checkbox"] {
+  margin-right: 0.5rem;
+  accent-color: #0284c7;
+}

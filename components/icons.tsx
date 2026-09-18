@@ -163,6 +163,24 @@ export function MenuIcon({ className }: IconProps) {
   );
 }
 
+export function SearchIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </Base>
+  );
+}
+
+export function BellIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <path d="M18 9a6 6 0 1 0-12 0c0 6-2.5 7-2.5 7h17S18 15 18 9z" />
+      <path d="M10 20a2.2 2.2 0 0 0 4 0" />
+    </Base>
+  );
+}
+
 export function CloseIcon({ className }: IconProps) {
   return (
     <Base className={className}>
@@ -175,6 +193,14 @@ export function ArrowRightIcon({ className }: IconProps) {
   return (
     <Base className={className}>
       <path d="M4 12h16M13 5l7 7-7 7" />
+    </Base>
+  );
+}
+
+export function ChevronUpIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <path d="M6 14l6-6 6 6" />
     </Base>
   );
 }
@@ -194,6 +220,27 @@ export function TrendUpIcon({ className }: IconProps) {
     <Base className={className}>
       <path d="M3 17l6-6 4 4 8-8" />
       <path d="M15 7h6v6" />
+    </Base>
+  );
+}
+
+export function CardsIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <rect x="3" y="6" width="13" height="14" rx="2" />
+      <path d="M8 6V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1" />
+      <path d="M7 11h5M7 15h3" />
+    </Base>
+  );
+}
+
+export function ConceptsIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <circle cx="12" cy="5" r="2.5" />
+      <circle cx="5" cy="19" r="2.5" />
+      <circle cx="19" cy="19" r="2.5" />
+      <path d="M12 7.5v4M10.5 12l-3.5 4.5M13.5 12l3.5 4.5" />
     </Base>
   );
 }

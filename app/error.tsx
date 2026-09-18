@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Button } from "@/components/ui";
 
 export default function RootError({
@@ -23,12 +24,12 @@ export default function RootError({
         </p>
         <div className="mt-6 flex justify-center gap-2">
           <Button onClick={reset}>Try again</Button>
-          <a
+          <Link
             href="/dashboard"
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 shadow-card transition-colors hover:bg-stone-50"
           >
             Back to dashboard
-          </a>
+          </Link>
         </div>
       </div>
     </main>

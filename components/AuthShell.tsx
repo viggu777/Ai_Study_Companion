@@ -1,14 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import type { ReactNode } from "react";
-import { BookIcon, ChatIcon, QuizIcon, TrendUpIcon } from "./icons";
-
-const highlights = [
-  { icon: BookIcon, title: "Upload once", text: "PDFs become searchable, cited knowledge." },
-  { icon: ChatIcon, title: "Ask grounded", text: "A tutor that answers from your materials." },
-  { icon: QuizIcon, title: "Test adaptively", text: "Quizzes target your weakest concepts." },
-  { icon: TrendUpIcon, title: "Watch mastery grow", text: "Deterministic tracking, honest trends." },
-];
+import AuthPreview from "./AuthPreview";
 
 export default function AuthShell({
   title,
@@ -16,6 +10,8 @@ export default function AuthShell({
   switchText,
   switchHref,
   switchLabel,
+  panelTitle,
+  panelSubtitle,
   children,
 }: {
   title: string;
@@ -23,12 +19,14 @@ export default function AuthShell({
   switchText: string;
   switchHref: string;
   switchLabel: string;
+  panelTitle: string;
+  panelSubtitle: string;
   children: ReactNode;
 }) {
   return (
     <main className="page-enter flex min-h-screen bg-stone-100">
-      {/* Brand panel */}
-      <div className="relative hidden w-[44%] shrink-0 overflow-hidden bg-sky-600 lg:block">
+      {/* Preview panel — live product shapes, static mock content */}
+      <div className="relative hidden w-[46%] shrink-0 overflow-hidden bg-sky-600 lg:block">
         <div
           aria-hidden
           className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(255,255,255,0.22),transparent_55%),radial-gradient(ellipse_at_bottom_right,rgba(12,74,110,0.35),transparent_55%)]"
@@ -47,22 +45,15 @@ export default function AuthShell({
           </div>
 
           <div>
-            <h2 className="max-w-md text-[32px] font-semibold leading-[1.15] tracking-tight text-white">
-              Learn in a loop: read, ask, test, master.
+            <h2 className="max-w-md text-[30px] font-semibold leading-[1.15] tracking-tight text-white">
+              {panelTitle}
             </h2>
-            <ul className="mt-8 space-y-5">
-              {highlights.map((h) => (
-                <li key={h.title} className="flex items-start gap-3.5">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white">
-                    <h.icon className="h-[18px] w-[18px]" />
-                  </span>
-                  <span>
-                    <span className="block text-sm font-semibold text-white">{h.title}</span>
-                    <span className="block text-sm text-white/70">{h.text}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <p className="mt-2 max-w-md text-[15px] leading-relaxed text-white/75">
+              {panelSubtitle}
+            </p>
+            <div className="mt-7 max-w-md">
+              <AuthPreview />
+            </div>
           </div>
 
           <p className="text-xs text-white/60">
@@ -77,7 +68,7 @@ export default function AuthShell({
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
             <span
               aria-hidden
-              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-sky-600 text-base font-bold text-white"
+              className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-sky-600/10 text-base font-bold text-sky-700 ring-1 ring-inset ring-sky-600/20"
             >
               A
             </span>
@@ -88,9 +79,9 @@ export default function AuthShell({
           <h1 className="text-[26px] font-semibold tracking-tight text-stone-900">{title}</h1>
           <p className="mt-1.5 text-sm text-stone-500">
             {subtitle}{" "}
-            <a href={switchHref} className="font-medium text-stone-800 hover:text-stone-900">
+            <Link href={switchHref} className="font-medium text-stone-800 hover:text-stone-900">
               {switchLabel}
-            </a>
+            </Link>
           </p>
           <div className="mt-7">{children}</div>
           <p className="mt-6 text-center text-xs text-stone-400">{switchText}</p>

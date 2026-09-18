@@ -1,6 +1,7 @@
 import { getCurrentUser } from "@/lib/auth/getCurrentUser";
 import { isAdminUser } from "@/lib/auth/admin";
-import Sidebar from "@/components/Sidebar";
+import { displayNameOf } from "@/components/avatar";
+import AppShell from "@/components/AppShell";
 
 /**
  * Shared app shell — sidebar navigation for every authenticated route.
@@ -11,11 +12,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const user = await getCurrentUser();
 
   return (
-    <div className="min-h-screen bg-stone-100">
-      <Sidebar userEmail={user.email ?? null} isAdmin={isAdminUser(user)} />
-      <div className="lg:pl-64">
-        <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">{children}</main>
-      </div>
-    </div>
+    <AppShell
+      userEmail={user.email ?? null}
+      userName={displayNameOf(user)}
+      isAdmin={isAdminUser(user)}
+    >
+      {children}
+    </AppShell>
   );
 }
