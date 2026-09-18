@@ -17,7 +17,7 @@ export async function GET(
     if (msg.includes("Project not found") || msg.includes("Practice assignment not found") || msg.includes("not found")) {
       return NextResponse.json({ error: msg }, { status: 404 });
     }
-    if (msg.includes("007_practice")) return NextResponse.json({ error: msg }, { status: 503 });
+    if (msg.includes("007_practice") || msg.includes("008_practice_mcq")) return NextResponse.json({ error: msg }, { status: 503 });
     return NextResponse.json({ error: msg || "Failed to load practice summary" }, { status: 500 });
   }
 }

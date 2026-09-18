@@ -41,7 +41,7 @@ export async function POST(
     if (msg.includes("Evaluation temporarily unavailable")) {
       return NextResponse.json({ error: msg }, { status: 502 });
     }
-    if (msg.includes("007_practice")) return NextResponse.json({ error: msg }, { status: 503 });
+    if (msg.includes("007_practice") || msg.includes("008_practice_mcq")) return NextResponse.json({ error: msg }, { status: 503 });
     console.error("submitPracticeResponse failed:", e);
     return NextResponse.json({ error: msg || "Failed to submit practice response" }, { status: 500 });
   }

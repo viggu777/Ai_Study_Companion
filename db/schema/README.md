@@ -1,10 +1,29 @@
 # Database Schema Migrations
 
 This directory contains SQL migration files for the AI Study Companion database schema.
+Migrations are applied with the tracked runner — **no manual copy-paste needed**:
+
+```bash
+npm run migrate          # apply pending migrations (idempotent, safe to re-run)
+npm run migrate -- --check   # list pending migrations without applying
+```
+
+The runner records applied files in `schema_migrations`, runs each file in a
+transaction, and baselines manually-built databases (marks 001–006 applied
+when it detects them instead of re-running). Always back up before migrating
+a database you care about.
 
 ## Running Migrations
 
-### Option 1: Supabase Dashboard (Recommended for Prototyping)
+### Option 1: Migration runner (recommended)
+
+```bash
+npm run migrate
+```
+
+Requires `DATABASE_URL` in `.env.local` (see `.env.example`).
+
+### Option 2: Supabase Dashboard (manual fallback)
 
 1. Open your Supabase project dashboard
 2. Go to **SQL Editor**

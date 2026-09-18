@@ -28,9 +28,14 @@ interface PracticeQuestion {
   subconcept_label: string | null;
   intent: string;
   difficulty: string;
+  question_type: "MCQ" | "OPEN_ENDED";
   question: string;
+  options: string[] | null;
   selection_reason: string | null;
   reference_answer?: string | null;
+  // Disclosed only for answered questions (API strips pre-submission).
+  correct_answer?: string | null;
+  explanation?: string | null;
   answered?: boolean;
 }
 
@@ -92,6 +97,12 @@ const INTENT_LABEL: Record<string, string> = {
   TEACH_BACK: "Teach-back",
 };
 
+const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"];
+
+function isPracticeMcq(q: PracticeQuestion): boolean {
+  return (q.question_type ?? "OPEN_ENDED") === "MCQ";
+}
+
 function StepDots({ total, current, answered }: { total: number; current: number; answered: boolean[] }) {
   return (
     <div className="flex items-center gap-1.5" aria-label={`Question ${current + 1} of ${total}`}>
@@ -118,6 +129,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
   const [active, setActive] = useState<ActiveAssignment | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answerText, setAnswerText] = useState("");
+  const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [results, setResults] = useState<Record<string, PracticeResponseRecord>>({});
   const [deltas, setDeltas] = useState<Record<string, MasteryDelta[]>>({});
@@ -165,6 +177,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       setDeltas({});
       setCalibrations({});
       setAnswerText("");
+      setSelectedOption(null);
       setConfidence(null);
       setShowFeedback(false);
       setCompleted(false);
@@ -224,6 +237,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
         setCurrentIdx(first);
       }
       setAnswerText("");
+      setSelectedOption(null);
       setConfidence(null);
       setShowFeedback(false);
     } catch (e) {
@@ -238,7 +252,12 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
 
   const submitCurrent = async () => {
     if (!currentQuestion || !active) return;
-    if (!answerText.trim()) {
+    const mcq = isPracticeMcq(currentQuestion);
+    if (mcq && !selectedOption) {
+      setError("Pick an option first — then submit to check it.");
+      return;
+    }
+    if (!mcq && !answerText.trim()) {
       setError("Write your explanation first — Practice is about showing understanding, not picking an option.");
       return;
     }
@@ -248,7 +267,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/practice/${active.assignment.id}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionId: currentQuestion.id, response: answerText.trim(), confidence }),
+        body: JSON.stringify({ questionId: currentQuestion.id, response: mcq ? selectedOption : answerText.trim(), confidence }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to submit practice response");
@@ -256,13 +275,23 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       setResults((prev) => ({ ...prev, [currentQuestion.id]: rec }));
       setDeltas((prev) => ({ ...prev, [currentQuestion.id]: (data.masteryDeltas ?? []) as MasteryDelta[] }));
       setCalibrations((prev) => ({ ...prev, [currentQuestion.id]: data.calibration as string }));
-      if (data.reference_answer !== undefined || data.assignmentStatus) {
+      if (data.reference_answer !== undefined || data.correct_answer !== undefined || data.assignmentStatus) {
         setActive((prev) =>
           prev
             ? {
                 ...prev,
                 assignment: { ...prev.assignment, status: data.assignmentStatus ?? prev.assignment.status },
-                questions: prev.questions.map((q) => (q.id === currentQuestion.id ? { ...q, answered: true } : q)),
+                questions: prev.questions.map((q) =>
+                  q.id === currentQuestion.id
+                    ? {
+                        ...q,
+                        answered: true,
+                        correct_answer: (data.correct_answer as string | null) ?? q.correct_answer ?? null,
+                        explanation: (data.explanation as string | null) ?? q.explanation ?? null,
+                        reference_answer: (data.reference_answer as string | null) ?? q.reference_answer ?? null,
+                      }
+                    : q
+                ),
               }
             : prev
         );
@@ -314,6 +343,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const nextQ = active.questions[currentIdx + 1];
       const nextRes = nextQ ? results[nextQ.id] : null;
       setAnswerText(nextRes?.response ?? "");
+      setSelectedOption(nextQ && isPracticeMcq(nextQ) ? (nextRes?.response ?? null) : null);
       setConfidence(nextRes?.confidence ?? null);
       setShowFeedback(!!nextRes);
     }
@@ -325,6 +355,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const prevQ = active.questions[currentIdx - 1];
       const prevRes = prevQ ? results[prevQ.id] : null;
       setAnswerText(prevRes?.response ?? "");
+      setSelectedOption(prevQ && isPracticeMcq(prevQ) ? (prevRes?.response ?? null) : null);
       setConfidence(prevRes?.confidence ?? null);
       setShowFeedback(!!prevRes);
       setError(null);
@@ -338,6 +369,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
     setDeltas({});
     setCalibrations({});
     setAnswerText("");
+    setSelectedOption(null);
     setConfidence(null);
     setError(null);
     setShowFeedback(false);
@@ -363,7 +395,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             {avg}
             <span className="text-2xl text-stone-400">%</span>
           </p>
-          <p className="mt-2 text-sm text-stone-500">{answered} of {total} explained · deep open-ended only</p>
+          <p className="mt-2 text-sm text-stone-500">{answered} of {total} answered · mixed multiple-choice + open-ended</p>
           <div className="mt-3 flex justify-center">
             <Badge tone={completed ? "success" : "warning"}>{completed ? "completed" : "in progress"}</Badge>
           </div>
@@ -489,19 +521,28 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
         <div className="space-y-3">
           {active.questions.map((q, idx) => {
             const r = results[q.id];
+            const qMcq = isPracticeMcq(q);
+            const qCorrect = qMcq && r?.score !== null && r?.score !== undefined ? r.score === 100 : null;
             return (
               <div key={q.id} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-card">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   <span className="flex h-6 w-6 items-center justify-center rounded-full bg-stone-100 text-xs font-semibold text-stone-700">{idx + 1}</span>
                   <Badge tone="accent">{INTENT_LABEL[q.intent] ?? q.intent}</Badge>
+                  <Badge tone="neutral">{qMcq ? "Multiple choice" : "Open ended"}</Badge>
                   <Badge tone="neutral">{q.difficulty}</Badge>
                   {q.concept_name && <span className="text-xs text-stone-400">{q.concept_name}</span>}
                   {r?.score !== null && r?.score !== undefined && <span className="tnum text-xs text-stone-500">{r.score}%</span>}
+                  {qCorrect !== null && <Badge tone={qCorrect ? "success" : "danger"}>{qCorrect ? "Correct" : "Incorrect"}</Badge>}
                 </div>
                 <p className="text-[15px] font-medium leading-relaxed text-stone-900">{q.question}</p>
                 <p className="mt-3 text-sm text-stone-700">
-                  <span className="font-medium text-stone-900">Your explanation:</span> {r ? r.response : <span className="text-stone-400">no response</span>}
+                  <span className="font-medium text-stone-900">{qMcq ? "Your answer:" : "Your explanation:"}</span> {r ? r.response : <span className="text-stone-400">no response</span>}
                 </p>
+                {qMcq && r && qCorrect === false && q.correct_answer && (
+                  <p className="mt-1.5 text-sm text-stone-700">
+                    <span className="font-medium text-green-700">Correct answer:</span> {q.correct_answer}
+                  </p>
+                )}
                 {r?.evaluation && (
                   <div className="mt-3 space-y-1.5 rounded-xl bg-stone-50 p-4 text-sm">
                     <p className="text-stone-800"><span className="font-medium">Feedback:</span> {r.evaluation.feedback}</p>
@@ -521,6 +562,8 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
 
   if (active && currentQuestion) {
     const alreadyAnswered = !!currentResult;
+    const mcq = isPracticeMcq(currentQuestion);
+    const mcqCorrect = mcq && currentResult?.score !== null && currentResult?.score !== undefined ? currentResult.score === 100 : null;
     const answeredFlags = active.questions.map((q) => !!results[q.id]);
     const qDeltas = deltas[currentQuestion.id] ?? [];
     const qCal = calibrations[currentQuestion.id];
@@ -537,7 +580,11 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
         <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-card sm:p-8">
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
             <Badge tone="accent">{INTENT_LABEL[currentQuestion.intent] ?? currentQuestion.intent}</Badge>
+            <Badge tone="neutral">{mcq ? "Multiple choice" : "Open ended"}</Badge>
             <Badge tone="neutral">{currentQuestion.difficulty}</Badge>
+            {mcq && alreadyAnswered && mcqCorrect !== null && (
+              <Badge tone={mcqCorrect ? "success" : "danger"}>{mcqCorrect ? "Correct" : "Incorrect"}</Badge>
+            )}
             {currentQuestion.concept_name && (
               <span className="text-xs text-stone-400" title="Selected from mastery + mistakes + misconceptions + growth">
                 {currentQuestion.concept_name}
@@ -553,18 +600,72 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             </p>
           )}
 
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-stone-700">Your explanation</label>
-            <textarea
-              value={alreadyAnswered ? (currentResult?.response ?? answerText) : answerText}
-              onChange={(e) => !alreadyAnswered && setAnswerText(e.target.value)}
-              placeholder="Explain in your own words — reasoning matters more than the right phrase…"
-              rows={6}
-              disabled={alreadyAnswered}
-              className="w-full rounded-2xl border border-stone-300 bg-white px-4 py-3 text-[15px] focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600 disabled:bg-stone-50"
-            />
-            <p className="mt-2 text-xs text-stone-400">Open-ended only — AI evaluates understanding and collects evidence for mastery, growth, and recommendations.</p>
-          </div>
+          {mcq ? (
+            <div>
+              <div className="space-y-2.5" role="radiogroup" aria-label="Answer options">
+                {(currentQuestion.options ?? []).map((opt, idx) => {
+                  const isSelected = selectedOption === opt;
+                  const isResponse = alreadyAnswered && currentResult?.response === opt;
+                  const showVerdict = alreadyAnswered && mcqCorrect !== null;
+                  const verdictGood = showVerdict && opt === currentQuestion.correct_answer;
+                  const verdictBad = showVerdict && isResponse && !mcqCorrect;
+                  return (
+                    <label
+                      key={idx}
+                      className={`flex cursor-pointer items-center gap-3.5 rounded-2xl border p-4 transition-all ${
+                        verdictGood
+                          ? "border-green-600 bg-green-50 ring-1 ring-green-600"
+                          : verdictBad
+                            ? "border-red-300 bg-red-50"
+                            : isSelected
+                              ? "border-sky-600 bg-sky-50 ring-1 ring-sky-600"
+                              : "border-stone-200 bg-white hover:border-stone-400 hover:bg-stone-50"
+                      } ${alreadyAnswered ? "cursor-default" : ""}`}
+                    >
+                      <span
+                        aria-hidden
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors ${
+                          verdictGood
+                            ? "bg-green-600 text-white"
+                            : verdictBad
+                              ? "bg-red-500 text-white"
+                              : isSelected && !alreadyAnswered
+                                ? "bg-sky-600 text-white"
+                                : "bg-stone-100 text-stone-500"
+                        }`}
+                      >
+                        {OPTION_LETTERS[idx] ?? idx + 1}
+                      </span>
+                      <input
+                        type="radio"
+                        name="practice-mcq-option"
+                        value={opt}
+                        checked={isSelected || isResponse}
+                        onChange={() => !alreadyAnswered && setSelectedOption(opt)}
+                        disabled={alreadyAnswered}
+                        className="sr-only"
+                      />
+                      <span className="text-[15px] text-stone-900">{opt}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-xs text-stone-400">Multiple-choice — checked instantly, no waiting on AI grading.</p>
+            </div>
+          ) : (
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-stone-700">Your explanation</label>
+              <textarea
+                value={alreadyAnswered ? (currentResult?.response ?? answerText) : answerText}
+                onChange={(e) => !alreadyAnswered && setAnswerText(e.target.value)}
+                placeholder="Explain in your own words — reasoning matters more than the right phrase…"
+                rows={6}
+                disabled={alreadyAnswered}
+                className="w-full rounded-2xl border border-stone-300 bg-white px-4 py-3 text-[15px] focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600 disabled:bg-stone-50"
+              />
+              <p className="mt-2 text-xs text-stone-400">Open-ended — AI evaluates understanding and collects evidence for mastery, growth, and recommendations.</p>
+            </div>
+          )}
 
           {!alreadyAnswered && (
             <div className="mt-4">
@@ -591,9 +692,22 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
 
           {showFeedback && currentResult?.evaluation && (
-            <div className="mt-5 space-y-3 rounded-2xl border border-stone-200 bg-stone-50 p-5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[15px] font-semibold text-stone-900">Score: {currentResult.score}%</span>
+            <div className={`mt-5 space-y-3 rounded-2xl border p-5 ${mcq ? (mcqCorrect ? "border-green-600/30 bg-green-50" : "border-red-200 bg-red-50/60") : "border-stone-200 bg-stone-50"}`}>
+              {mcq ? (
+                <div className="space-y-1.5 text-sm">
+                  <p className={`text-[15px] font-semibold ${mcqCorrect ? "text-green-700" : "text-stone-900"}`}>
+                    {mcqCorrect ? "Correct — nice work" : "Not quite"} <span className="tnum text-xs font-normal text-stone-500">({currentResult.score}/100)</span>
+                  </p>
+                  <p className="text-stone-800"><span className="font-medium">Feedback:</span> {currentResult.evaluation.feedback}</p>
+                  {currentQuestion.explanation && (
+                    <p className="text-xs text-stone-500"><span className="font-medium">Why:</span> {currentQuestion.explanation}</p>
+                  )}
+                  <p className="text-xs text-stone-500"><span className="font-medium">Next:</span> {currentResult.evaluation.suggested_improvement}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[15px] font-semibold text-stone-900">Score: {currentResult.score}%</span>
                 <Badge tone={currentResult.evaluation.understanding_level === "ADVANCED" || currentResult.evaluation.understanding_level === "PROFICIENT" ? "success" : currentResult.evaluation.understanding_level === "DEVELOPING" ? "warning" : "danger"}>
                   {currentResult.evaluation.understanding_level.toLowerCase()}
                 </Badge>
@@ -628,7 +742,9 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
                 {currentQuestion.reference_answer && (
                   <p className="text-xs text-stone-400">Strong answer looks like: {currentQuestion.reference_answer}</p>
                 )}
-              </div>
+                  </div>
+                </>
+              )}
               {qDeltas.length > 0 && (
                 <div className="rounded-xl bg-white p-3.5 ring-1 ring-inset ring-stone-200">
                   <p className="text-xs font-semibold uppercase tracking-wide text-stone-500">What changed in your learning state</p>
@@ -653,9 +769,9 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               ← Previous
             </button>
             {!alreadyAnswered && !showFeedback ? (
-              <Button onClick={submitCurrent} disabled={submitting || !answerText.trim()} className="min-w-32">
+              <Button onClick={submitCurrent} disabled={submitting || (mcq ? !selectedOption : !answerText.trim())} className="min-w-32">
                 {submitting && <Spinner className="text-white" />}
-                {submitting ? "Evaluating…" : "Submit explanation"}
+                {submitting ? (mcq ? "Checking…" : "Evaluating…") : mcq ? "Submit answer" : "Submit explanation"}
                 {!submitting && <ArrowRightIcon className="h-4 w-4" />}
               </Button>
             ) : (
@@ -665,7 +781,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               </Button>
             )}
           </div>
-          {submitting && <p className="mt-2 text-center text-xs text-stone-400">Evaluating understanding + extracting evidence…</p>}
+          {submitting && <p className="mt-2 text-center text-xs text-stone-400">{mcq ? "Checking your answer…" : "Evaluating understanding + extracting evidence…"}</p>}
         </div>
 
         <p className="text-center text-xs text-stone-400">
@@ -685,7 +801,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold tracking-tight text-stone-900">Deep practice</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
-              Open-ended questions per assignment, chosen from weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites — never multiple-choice.
+              Mixed multiple-choice + open-ended questions per assignment, chosen from weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites.
             </p>
             <div className="mt-3 rounded-xl bg-stone-50 px-3.5 py-2.5 text-xs leading-relaxed text-stone-500 ring-1 ring-inset ring-stone-200">
               <span className="font-semibold text-stone-700">Quiz = fast assessment.</span> Get the answer right.{" "}
@@ -724,11 +840,11 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               </LinkButton>
             </div>
             {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
-            {error?.includes("007_practice") && (
+            {error?.includes("007_practice") || error?.includes("008_practice_mcq") ? (
               <p className="mt-2 rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
-                Setup needed: run <span className="font-mono">db/schema/007_practice.sql</span> in the Supabase SQL Editor (after 006), then try again.
+                Setup needed: run <span className="font-mono">npm run migrate</span> (or apply the SQL in <span className="font-mono">db/schema/</span> via the Supabase SQL Editor), then try again.
               </p>
-            )}
+            ) : null}
             {generating && <p className="mt-2 text-xs text-stone-400">Analyzing mastery + misconceptions + selecting intents…</p>}
           </div>
         </div>
@@ -751,11 +867,11 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <div className="p-8 text-center">
             <p className="text-sm font-medium text-stone-900">Couldn&apos;t load practice</p>
             <p className="mx-auto mt-1 max-w-md text-sm text-stone-500">{listError}</p>
-            {listError.includes("007_practice") && (
+            {listError.includes("007_practice") || listError.includes("008_practice_mcq") ? (
               <p className="mx-auto mt-2 max-w-md rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
-                Setup needed: run <span className="font-mono">db/schema/007_practice.sql</span> in the Supabase SQL Editor (after 006), then press Refresh.
+                Setup needed: run <span className="font-mono">npm run migrate</span> (or apply the SQL in <span className="font-mono">db/schema/</span> via the Supabase SQL Editor), then press Refresh.
               </p>
-            )}
+            ) : null}
             <button onClick={fetchAssignments} className="mt-4 text-xs font-medium text-stone-500 transition-colors hover:text-stone-900">
               Retry
             </button>

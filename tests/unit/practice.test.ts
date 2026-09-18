@@ -12,6 +12,7 @@ import {
   clampPracticeCount,
   PRACTICE_GENERATION_SYSTEM_PROMPT,
   PRACTICE_EVALUATION_SYSTEM_PROMPT,
+  PracticeEvaluationSchema,
   PRACTICE_DEFAULT_COUNT,
   PRACTICE_MAX_COUNT,
   PRACTICE_MIN_COUNT,
@@ -21,13 +22,17 @@ import {
   computePracticeScore,
   pickPracticeIntent,
   pickPracticeDifficulty,
+  pickPracticeQuestionType,
+  ensurePracticeTypeMix,
   practiceEvidenceFor,
   buildPracticeHistoryReason,
   stripPracticeQuestionForTaking,
   gatePracticeQuestionForReview,
   mapMentionsToConceptIds,
   isMissingTableError,
+  isMissingPracticeMcqColumnError,
   PRACTICE_SETUP_MESSAGE,
+  PRACTICE_MCQ_SETUP_MESSAGE,
 } from "@/services/practice.service";
 import {
   confidenceForEvidenceCount,
@@ -52,7 +57,11 @@ function validGenRaw() {
         subconcept_label: "chain rule intuition",
         intent: "EXPLAIN",
         difficulty: "easy",
+        question_type: "OPEN_ENDED",
         question: "Explain how gradient descent updates weights and why the learning rate matters for convergence in your own words?",
+        options: null,
+        correct_answer: null,
+        explanation: null,
         reference_answer: "Strong answer describes iterative updates opposite the gradient and the trade-off of too-large vs too-small rates.",
         selection_reason: "mastery 32 + sign-error misconception",
       },
@@ -62,8 +71,12 @@ function validGenRaw() {
         subconcept_label: null,
         intent: "APPLY",
         difficulty: "medium",
-        question: "Apply gradient descent to a one-dimensional quadratic and walk through three update steps showing how the learning rate changes the path?",
-        reference_answer: "Shows updates w := w - lr*grad with numeric steps and compares small vs large lr.",
+        question_type: "MCQ",
+        question: "You run gradient descent on f(w) = w^2 from w=4 with learning rate 0.1. What is w after one update?",
+        options: ["3.2", "3.6", "4.0", "2.4"],
+        correct_answer: "3.2",
+        explanation: "grad = 2w = 8, so w := 4 - 0.1*8 = 3.2.",
+        reference_answer: null,
         selection_reason: "recent mistake on step-size question",
       },
     ],
@@ -87,14 +100,18 @@ function validEvalRaw() {
 }
 
 describe("practice generation validation", () => {
-  it("accepts a valid open-ended batch + edge proposal", () => {
+  it("accepts a valid mixed MCQ + open-ended batch + edge proposal", () => {
     const out = validatePracticeGenerationOutput(validGenRaw(), [CID_A, CID_B]);
     expect(out.questions).toHaveLength(2);
     expect(out.questions[0].intent).toBe("EXPLAIN");
+    expect(out.questions[0].question_type).toBe("OPEN_ENDED");
+    expect(out.questions[1].question_type).toBe("MCQ");
+    expect(out.questions[1].options).toHaveLength(4);
+    expect(out.questions[1].correct_answer).toBe("3.2");
     expect(out.suggested_edges).toHaveLength(1);
   });
 
-  it("rejects MCQ-style or malformed output", () => {
+  it("rejects malformed output per type", () => {
     expect(() => validatePracticeGenerationOutput({ questions: [] }, [CID_A])).toThrow();
     expect(() => validatePracticeGenerationOutput({ questions: [{ concept_id: CID_A }] }, [CID_A])).toThrow();
     expect(() =>
@@ -103,6 +120,38 @@ describe("practice generation validation", () => {
         [CID_A]
       )
     ).toThrow(/intent/);
+    // MCQ without 4 options or with an answer outside options.
+    expect(() =>
+      validatePracticeGenerationOutput(
+        { questions: [{ ...validGenRaw().questions[1], options: ["only", "two"] }], suggested_edges: [] },
+        [CID_B]
+      )
+    ).toThrow(/4 options/);
+    expect(() =>
+      validatePracticeGenerationOutput(
+        { questions: [{ ...validGenRaw().questions[1], correct_answer: "not an option" }], suggested_edges: [] },
+        [CID_B]
+      )
+    ).toThrow(/one of options/);
+    // MCQ must not carry a reference answer; open-ended must not carry options.
+    expect(() =>
+      validatePracticeGenerationOutput(
+        { questions: [{ ...validGenRaw().questions[1], reference_answer: "leak" }], suggested_edges: [] },
+        [CID_B]
+      )
+    ).toThrow(/reference_answer/);
+    expect(() =>
+      validatePracticeGenerationOutput(
+        { questions: [{ ...validGenRaw().questions[0], options: ["a", "b", "c", "d"] }], suggested_edges: [] },
+        [CID_A]
+      )
+    ).toThrow(/options/);
+    expect(() =>
+      validatePracticeGenerationOutput(
+        { questions: [{ ...validGenRaw().questions[0], question_type: "FILL_BLANK" }], suggested_edges: [] },
+        [CID_A]
+      )
+    ).toThrow(/question_type/);
   });
 
   it("rejects unknown concept ids and self-loop edges", () => {
@@ -126,19 +175,22 @@ describe("practice generation validation", () => {
     expect(() => validatePracticeGenerationOutput(raw, [CID_A, CID_B])).toThrow(/too short/);
   });
 
-  it("generation prompt is open-ended-only and carries untrusted-data guard", () => {
-    expect(PRACTICE_GENERATION_SYSTEM_PROMPT).toMatch(/never.*multiple-choice|open-ended/i);
+  it("generation prompt requests mixed MCQ + open-ended and carries untrusted-data guard", () => {
+    expect(PRACTICE_GENERATION_SYSTEM_PROMPT).toMatch(/multiple-choice/i);
+    expect(PRACTICE_GENERATION_SYSTEM_PROMPT).toMatch(/open-ended/i);
     expect(PRACTICE_GENERATION_SYSTEM_PROMPT).toMatch(/UNTRUSTED DATA/);
     const prompt = buildPracticeGenerationUserPrompt({
       projectName: "ML Basics",
       learningGoal: "ace optimization",
       concepts: [
-        { concept_id: CID_A, name: "Gradient Descent", description: "iterative optimizer", mastery: 32, trend: "declining", isRecentMistake: true, misconceptions: ["larger lr always better"], targetIntent: "WHY", targetDifficulty: "medium", materialHint: "notes.pdf" },
+        { concept_id: CID_A, name: "Gradient Descent", description: "iterative optimizer", mastery: 32, trend: "declining", isRecentMistake: true, misconceptions: ["larger lr always better"], targetIntent: "WHY", targetDifficulty: "medium", targetType: "OPEN_ENDED", materialHint: "notes.pdf" },
+        { concept_id: CID_B, name: "Learning Rate", description: "step-size scale", mastery: 55, trend: "stable", isRecentMistake: true, misconceptions: [], targetIntent: "APPLY", targetDifficulty: "medium", targetType: "MCQ", materialHint: "notes.pdf" },
       ],
       evidence: ["[Gradient Descent] update opposite gradient"],
     });
     expect(prompt).toContain(CID_A);
     expect(prompt).toContain("WHY");
+    expect(prompt).toContain("targetType=MCQ");
     expect(prompt).toContain("<retrieved_evidence>");
   });
 });
@@ -217,6 +269,45 @@ describe("practice adaptive selection (multi-signal, not wrong->easy)", () => {
     expect(pickPracticeDifficulty(90, "APPLY")).toBe("hard");
     expect(pickPracticeDifficulty(60, "SCENARIO")).toBe("hard");
     expect(pickPracticeDifficulty(50, "SCENARIO")).toBe("medium");
+  });
+});
+
+describe("practice question types (mixed MCQ + open-ended)", () => {
+  it("picks MCQ for shaky application-style work, open-ended for explanation", () => {
+    expect(pickPracticeQuestionType({ mastery: 30, isRecentMistake: false, misconceptionCount: 0, intent: "EXPLAIN" })).toBe("OPEN_ENDED");
+    expect(pickPracticeQuestionType({ mastery: 90, isRecentMistake: false, misconceptionCount: 0, intent: "TEACH_BACK" })).toBe("OPEN_ENDED");
+    expect(pickPracticeQuestionType({ mastery: 80, isRecentMistake: false, misconceptionCount: 0, intent: "WHY" })).toBe("OPEN_ENDED");
+    expect(pickPracticeQuestionType({ mastery: 50, isRecentMistake: false, misconceptionCount: 1, intent: "APPLY" })).toBe("OPEN_ENDED");
+    expect(pickPracticeQuestionType({ mastery: 55, isRecentMistake: true, misconceptionCount: 0, intent: "APPLY" })).toBe("MCQ");
+    expect(pickPracticeQuestionType({ mastery: 45, isRecentMistake: false, misconceptionCount: 0, intent: "COMPARE" })).toBe("MCQ");
+    expect(pickPracticeQuestionType({ mastery: 80, isRecentMistake: false, misconceptionCount: 0, intent: "SCENARIO" })).toBe("OPEN_ENDED");
+  });
+
+  it("guarantees a mixed assignment when count >= 2", () => {
+    const mk = (intent: "EXPLAIN" | "WHY" | "APPLY" | "COMPARE", mastery: number, targetType: "MCQ" | "OPEN_ENDED") => ({ targetIntent: intent, mastery, targetType });
+    const allOpen = ensurePracticeTypeMix([mk("EXPLAIN", 30, "OPEN_ENDED"), mk("WHY", 40, "OPEN_ENDED"), mk("APPLY", 60, "OPEN_ENDED")]);
+    expect(allOpen.map((c) => c.targetType)).toContain("MCQ");
+    expect(allOpen.map((c) => c.targetType)).toContain("OPEN_ENDED");
+    // Flips an MCQ-friendly intent, not the explanation question.
+    expect(allOpen[0].targetType).toBe("OPEN_ENDED");
+    expect(allOpen[2].targetType).toBe("MCQ");
+    const allMcq = ensurePracticeTypeMix([mk("APPLY", 40, "MCQ"), mk("COMPARE", 50, "MCQ")]);
+    expect(allMcq.map((c) => c.targetType)).toContain("OPEN_ENDED");
+    expect(allMcq.map((c) => c.targetType)).toContain("MCQ");
+    // Single-question assignments are untouched.
+    expect(ensurePracticeTypeMix([mk("EXPLAIN", 30, "OPEN_ENDED")])).toEqual([mk("EXPLAIN", 30, "OPEN_ENDED")]);
+    // Already-mixed assignments are untouched.
+    const mixed = [mk("EXPLAIN", 30, "OPEN_ENDED"), mk("APPLY", 50, "MCQ")];
+    expect(ensurePracticeTypeMix(mixed)).toEqual(mixed);
+  });
+
+  it("evaluation schema accepts the documented single reasoning_quality key", () => {
+    // Regression: the schema once required BOTH reasoningQuality and
+    // reasoning_quality, so generateStructured rejected every compliant LLM
+    // output and all practice grading failed as "temporarily unavailable".
+    const keys = Object.keys(PracticeEvaluationSchema);
+    expect(keys).toContain("reasoning_quality");
+    expect(keys).not.toContain("reasoningQuality");
   });
 });
 
@@ -323,13 +414,20 @@ describe("practice persistence: idempotency + isolation", () => {
     }
   });
 
-  it("question gating hides reference answers until graded", () => {
-    const stripped = stripPracticeQuestionForTaking({ id: "q1", concept_id: CID_A, question: "Why?", reference_answer: "secret", selection_reason: "weak" });
+  it("question gating hides answers until graded but keeps MCQ options", () => {
+    const mcq = { id: "q1", concept_id: CID_A, question_type: "MCQ", question: "Pick one.", options: ["a", "b", "c", "d"], correct_answer: "b", explanation: "because b", reference_answer: null, selection_reason: "weak" };
+    const stripped = stripPracticeQuestionForTaking({ ...mcq });
     expect(stripped).not.toHaveProperty("reference_answer");
+    expect(stripped).not.toHaveProperty("correct_answer");
+    expect(stripped).not.toHaveProperty("explanation");
+    expect(stripped.options).toEqual(["a", "b", "c", "d"]);
     expect(stripped.answered).toBe(false);
-    const gated = gatePracticeQuestionForReview({ id: "q1", concept_id: CID_A, question: "Why?", reference_answer: "secret" }, false);
+    const gated = gatePracticeQuestionForReview({ ...mcq }, false);
     expect(gated.reference_answer).toBeNull();
-    const shown = gatePracticeQuestionForReview({ id: "q1", concept_id: CID_A, question: "Why?", reference_answer: "secret" }, true);
+    expect(gated.correct_answer).toBeNull();
+    expect(gated.explanation).toBeNull();
+    expect(gated.options).toEqual(["a", "b", "c", "d"]);
+    const shown = gatePracticeQuestionForReview({ id: "q1", concept_id: CID_A, question: "Why?", reference_answer: "secret", correct_answer: null, explanation: null }, true);
     expect(shown.reference_answer).toBe("secret");
   });
 
@@ -384,6 +482,19 @@ describe("missing-table resilience (007 migration not applied)", () => {
     expect(PRACTICE_SETUP_MESSAGE).toContain("007_practice.sql");
   });
 
+  it("008 migration adds MCQ columns and maps setup errors to 503", () => {
+    const sql = fs.readFileSync(path.join(ROOT, "db/schema/008_practice_mcq.sql"), "utf8");
+    expect(sql).toContain("question_type");
+    expect(sql).toContain("correct_answer");
+    expect(sql).toContain("MCQ");
+    expect(sql).toContain("OPEN_ENDED");
+    expect(isMissingPracticeMcqColumnError({ code: "PGRST204", message: "Could not find the 'question_type' column in the schema cache" })).toBe(true);
+    expect(isMissingPracticeMcqColumnError(new Error('column "correct_answer" of relation "practice_questions" does not exist'))).toBe(true);
+    expect(isMissingPracticeMcqColumnError(new Error("Project not found"))).toBe(false);
+    expect(isMissingPracticeMcqColumnError(null)).toBe(false);
+    expect(PRACTICE_MCQ_SETUP_MESSAGE).toContain("008_practice_mcq.sql");
+  });
+
   it("practice routes map the setup error to 503 (not a bare 500)", () => {
     const files = [
       "app/api/projects/[projectId]/practice/route.ts",
@@ -395,6 +506,7 @@ describe("missing-table resilience (007 migration not applied)", () => {
       const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
       expect(src, `${rel} 503`).toContain("503");
       expect(src, `${rel} setup`).toContain("007_practice");
+      expect(src, `${rel} mcq setup`).toContain("008_practice_mcq");
     }
   });
 
