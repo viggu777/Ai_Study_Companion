@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { listMaterials, uploadMaterial } from "@/services/material.service";
 
+// PDF processing (extract → Gemini embed → concepts) runs inline in POST when
+// Inngest delivery fails, so allow the function time on Vercel.
+export const maxDuration = 60;
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ projectId: string }> }

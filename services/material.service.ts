@@ -138,18 +138,21 @@ export async function uploadMaterial(
     metadata: { filename: file.name, storage_path: storagePath },
   });
 
-  // Trigger background job — fire and forget, return 202-style
+  // Trigger background job. On Vercel serverless a setTimeout fallback never
+  // runs after the response is sent (function frozen), which used to leave
+  // materials stuck in QUEUED forever when Inngest delivery failed (missing /
+  // mismatched INNGEST_* keys, app not synced) → 0 chunks → tutor
+  // "insufficient evidence" + empty concepts. So on send failure, process
+  // inline within this request (route sets maxDuration=60). The claim guard
+  // in processMaterial keeps this safe if Inngest later delivers anyway.
   try {
     await inngest.send({
       name: "material/uploaded",
       data: { materialId: material.id, projectId, userId, spaceId: project.space_id },
     });
   } catch (e) {
-    console.error("Inngest send failed, falling back to direct processing:", e);
-    // Fire-and-forget direct processing fallback for local dev without Inngest cloud
-    setTimeout(() => {
-      processMaterial(material.id).catch((err) => console.error("Fallback processMaterial failed:", err));
-    }, 100);
+    console.error("Inngest send failed, processing inline within request:", e);
+    await processMaterial(material.id);
   }
 
   // Also attempt direct fallback after short delay even if Inngest succeeded, but only if Inngest dev server not present
@@ -220,10 +223,10 @@ export async function retryMaterial(materialId: string) {
       name: "material/uploaded",
       data: { materialId, projectId: mat.project_id, userId, spaceId: project?.space_id ?? null },
     });
-  } catch {
-    setTimeout(() => {
-      processMaterial(materialId).catch((err) => console.error("Retry fallback failed:", err));
-    }, 100);
+  } catch (e) {
+    // Same serverless note as uploadMaterial: process inline, never setTimeout.
+    console.error("Retry Inngest send failed, processing inline within request:", e);
+    await processMaterial(materialId);
   }
   return { id: materialId, status: "QUEUED" as const };
 }

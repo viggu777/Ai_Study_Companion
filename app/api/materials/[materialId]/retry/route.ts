@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { retryMaterial } from "@/services/material.service";
 
+// Retry re-runs the full pipeline inline when Inngest is unavailable.
+export const maxDuration = 60;
+
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ materialId: string }> }

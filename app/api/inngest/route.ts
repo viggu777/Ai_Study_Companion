@@ -4,6 +4,10 @@ import { functions as materialFunctions } from "@/lib/jobs/material";
 import { functions as masteryFunctions } from "@/lib/jobs/mastery";
 import { functions as recommendationFunctions } from "@/lib/jobs/recommendation";
 
+// Material processing (pdf-parse + Gemini batches + concept extraction) can
+// exceed the default serverless timeout — allow time on Vercel.
+export const maxDuration = 60;
+
 export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
