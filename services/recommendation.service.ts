@@ -334,8 +334,10 @@ export async function updateRecommendationStatus(recommendationId: string, statu
   const { getCurrentUserId } = await import("@/lib/auth/getCurrentUser");
   const userId = await getCurrentUserId();
   const db = await getDb();
-  const { data: rec, error: fetchErr } = await db.from("recommendations").select("id, project_id, space_id, title").eq("id", recommendationId).eq("user_id", userId).single();
-  // Note: recommendations may not have space_id column; derive from project
+  // NOTE: recommendations table has no space_id column (only project_id) —
+  // selecting it makes PostgREST fail, which previously surfaced as a bogus
+  // "Recommendation not found" on every status update. Derive space via project.
+  const { data: rec, error: fetchErr } = await db.from("recommendations").select("id, project_id, title").eq("id", recommendationId).eq("user_id", userId).single();
   if (fetchErr || !rec) throw new Error("Recommendation not found");
   const typed = rec as { id: string; project_id: string; title: string };
   const { error: updErr } = await db.from("recommendations").update({ status }).eq("id", recommendationId).eq("user_id", userId);

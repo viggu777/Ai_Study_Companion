@@ -7,9 +7,19 @@ import { SparkIcon } from "@/components/icons";
 interface Rec {
   id: string;
   title: string;
-  action_items: string[];
+  action_items: unknown;
   status: string;
   created_at: string;
+}
+
+function actionItemsOf(rec: Rec): string[] {
+  if (Array.isArray(rec.action_items)) return rec.action_items.filter((x): x is string => typeof x === "string");
+  return [];
+}
+
+function formatDate(value: string): string {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
 const filters = ["ALL", "ACTIVE", "COMPLETED", "DISMISSED"] as const;
@@ -25,10 +35,10 @@ export default function RecommendationClient({ projectId }: { projectId: string 
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/projects/${projectId}/recommendations`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Failed to fetch");
-      setRecs(data.recommendations ?? []);
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/recommendations`);
+      const data = (await res.json().catch(() => null)) as { recommendations?: unknown; error?: unknown } | null;
+      if (!res.ok) throw new Error(typeof data?.error === "string" ? data.error : "Failed to fetch recommendations");
+      setRecs(Array.isArray(data?.recommendations) ? (data.recommendations as Rec[]) : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -42,18 +52,24 @@ export default function RecommendationClient({ projectId }: { projectId: string 
   }, [projectId]);
 
   const updateStatus = async (id: string, status: "COMPLETED" | "DISMISSED" | "ACTIVE") => {
+    const previous = recs;
+    // Optimistic update so the UI responds instantly; roll back on failure.
+    setRecs((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
     setUpdatingId(id);
     setError(null);
     try {
-      const res = await fetch(`/api/recommendations/${id}`, {
+      const res = await fetch(`/api/recommendations/${encodeURIComponent(id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Update failed");
-      setRecs((prev) => prev.map((r) => (r.id === id ? { ...r, status } : r)));
+      const data = (await res.json().catch(() => null)) as { error?: unknown } | null;
+      if (!res.ok) {
+        const raw = typeof data?.error === "string" ? data.error : "Update failed";
+        throw new Error(res.status === 404 ? "That recommendation no longer exists — refresh the list." : raw);
+      }
     } catch (e) {
+      setRecs(previous);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setUpdatingId(null);
@@ -72,7 +88,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
             aria-pressed={filter === f}
             className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
               filter === f
-                ? "border-sky-600 bg-sky-600 text-white shadow-sm"
+                ? "border-sky-600/30 bg-sky-600/10 text-sky-900 shadow-sm"
                 : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:bg-stone-50"
             }`}
           >
@@ -110,9 +126,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="font-semibold tracking-tight text-stone-900">{r.title}</h3>
-                  <p className="tnum mt-0.5 text-xs text-stone-400">
-                    {new Date(r.created_at).toLocaleString()}
-                  </p>
+                  <p className="tnum mt-0.5 text-xs text-stone-400">{formatDate(r.created_at)}</p>
                 </div>
                 <Badge
                   tone={r.status === "ACTIVE" ? "accent" : r.status === "COMPLETED" ? "success" : "neutral"}
@@ -122,7 +136,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
                 </Badge>
               </div>
               <ol className="mt-3 space-y-2">
-                {r.action_items.map((item, idx) => (
+                {actionItemsOf(r).map((item, idx) => (
                   <li key={idx} className="flex items-start gap-2.5 text-sm text-stone-700">
                     <span
                       aria-hidden

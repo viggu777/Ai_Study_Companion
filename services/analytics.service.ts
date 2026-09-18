@@ -180,22 +180,36 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
     avgMastery = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 100) / 100;
   }
 
-  // Trend counts via growth logic: compare last 2 mastery_history points per concept
+  // Trend counts via growth logic: compare last 2 mastery_history points per concept.
+  // Batched into ONE query (was N serial round-trips, one per concept) — this
+  // ran on every Analytics page load and dominated its latency.
   let improvingCount = 0;
   let stableCount = 0;
   let requiresAttentionCount = 0;
-  // Fetch history last 2 per concept (bounded, do N+1 queries but concepts small; alternative: fetch all history for project)
-  // To keep consistent with spec's threshold 5, reuse same logic as growth.service
   if (concepts.length > 0) {
+    const conceptIds = concepts.map((c) => c.id);
+    const { data: allHist } = await db
+      .from("mastery_history")
+      .select("concept_id, previous_score, new_score, created_at")
+      .eq("user_id", userId)
+      .in("concept_id", conceptIds)
+      .order("created_at", { ascending: false })
+      .limit(2000);
+    const histByConcept = new Map<
+      string,
+      Array<{ previous_score: number | string; new_score: number | string }>
+    >();
+    for (const h of ((allHist ?? []) as Array<{
+      concept_id: string;
+      previous_score: number | string;
+      new_score: number | string;
+    }>)) {
+      const arr = histByConcept.get(h.concept_id) ?? [];
+      arr.push({ previous_score: h.previous_score, new_score: h.new_score });
+      histByConcept.set(h.concept_id, arr);
+    }
     for (const c of concepts) {
-      const { data: hist } = await db
-        .from("mastery_history")
-        .select("previous_score, new_score, created_at")
-        .eq("concept_id", c.id)
-        .eq("user_id", userId)
-        .order("created_at", { ascending: false })
-        .limit(2);
-      const h = (hist ?? []) as Array<{ previous_score: number | string; new_score: number | string }>;
+      const h = histByConcept.get(c.id) ?? [];
       let trend: ReturnType<typeof classifyTrend>;
       if (h.length === 0) {
         // No history — check mastery value: null or <60 considered requires? But for analytics we mirror growth: STABLE if no history

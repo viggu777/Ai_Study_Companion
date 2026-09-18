@@ -11,13 +11,8 @@ export default async function RecommendationsPage({ params }: { params: Promise<
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Recommendations — {project.name}</h1>
-        <p className="text-sm text-stone-600">Actionable next steps — each names a specific concept and material/page when available</p>
-      </div>
-      <div className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-        <RecommendationClient projectId={projectId} />
-      </div>
+      <p className="mb-4 text-sm text-stone-500">Actionable next steps — each names a specific concept and material/page when available.</p>
+      <RecommendationClient projectId={projectId} />
     </div>
   );
 }

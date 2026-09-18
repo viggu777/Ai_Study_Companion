@@ -21,6 +21,8 @@ export interface GrowthEntry {
   delta: number | null;
   trend: Trend;
   historyCount: number;
+  /** materials row this concept was extracted from (may be null) */
+  sourceMaterialId: string | null;
 }
 
 async function getProjectOwnerCheck(projectId: string, userId: string, db: Awaited<ReturnType<typeof getDb>>) {
@@ -60,7 +62,7 @@ export async function getGrowthAnalysis(
   const [conceptsRes, masteryRes] = await Promise.all([
     typedDb
       .from("concepts")
-      .select("id, name, description")
+      .select("id, name, description, source_material_id")
       .eq("project_id", projectId)
       .order("name", { ascending: true }),
     typedDb
@@ -70,7 +72,7 @@ export async function getGrowthAnalysis(
       .eq("user_id", userId!),
   ]);
   if (conceptsRes.error) throw new Error(`Failed to fetch concepts: ${conceptsRes.error.message}`);
-  const conceptRows = (conceptsRes.data ?? []) as Array<{ id: string; name: string; description: string | null }>;
+  const conceptRows = (conceptsRes.data ?? []) as Array<{ id: string; name: string; description: string | null; source_material_id: string | null }>;
   if (conceptRows.length === 0) return [];
 
   const masteryByConcept = new Map<string, number>();
@@ -78,28 +80,31 @@ export async function getGrowthAnalysis(
     masteryByConcept.set(r.concept_id, Number(r.mastery_score));
   }
 
-  // Fetch mastery_history last 2 points per concept — concurrently, not
-  // sequentially (previously N serial round-trips). Same per-concept limit(2)
-  // semantics; Promise.all preserves order so entries stay concept-sorted.
-  const historyResults = await Promise.all(
-    conceptRows.map((c) =>
-      typedDb
-        .from("mastery_history")
-        .select("previous_score, new_score, created_at")
-        .eq("concept_id", c.id)
-        .eq("user_id", userId!)
-        .order("created_at", { ascending: false })
-        .limit(2)
-    )
-  );
+  // Fetch mastery_history: one batched query for all concepts (not N serial
+  // round-trips). Rows are globally newest-first; group per concept in JS so
+  // historyCount is the TRUE total (previously limit(2) per concept made every
+  // count read 0-2). Trend still uses the 2 most recent points per concept.
+  const { data: historyRows, error: histErr } = await typedDb
+    .from("mastery_history")
+    .select("concept_id, previous_score, new_score, created_at")
+    .eq("user_id", userId!)
+    .in("concept_id", conceptRows.map((c) => c.id))
+    .order("created_at", { ascending: false })
+    .limit(2000);
+  if (histErr) throw new Error(`Failed to fetch mastery history: ${histErr.message}`);
+
+  const byConcept = new Map<string, Array<{ previous_score: number | string; new_score: number | string; created_at: string }>>();
+  for (const h of ((historyRows ?? []) as Array<{ concept_id: string; previous_score: number | string; new_score: number | string; created_at: string }>)) {
+    const arr = byConcept.get(h.concept_id) ?? [];
+    arr.push({ previous_score: h.previous_score, new_score: h.new_score, created_at: h.created_at });
+    byConcept.set(h.concept_id, arr);
+  }
 
   // For each concept, fetch mastery_history last 2 points
   const entries: GrowthEntry[] = [];
   for (let i = 0; i < conceptRows.length; i++) {
     const c = conceptRows[i];
-    const hist = historyResults[i].data;
-
-    const h = (hist ?? []) as Array<{ previous_score: number | string; new_score: number | string; created_at: string }>;
+    const h = byConcept.get(c.id) ?? [];
     const historyCount = h.length;
     const currentScore = masteryByConcept.get(c.id) ?? null;
 
@@ -114,6 +119,7 @@ export async function getGrowthAnalysis(
         delta: null,
         trend: "STABLE",
         historyCount,
+        sourceMaterialId: c.source_material_id ?? null,
       });
       continue;
     }
@@ -133,6 +139,7 @@ export async function getGrowthAnalysis(
         delta: Math.round((curr - prev) * 100) / 100,
         trend,
         historyCount,
+        sourceMaterialId: c.source_material_id ?? null,
       });
       continue;
     }
@@ -151,6 +158,7 @@ export async function getGrowthAnalysis(
       delta: Math.round((latestScore - priorScore) * 100) / 100,
       trend,
       historyCount,
+      sourceMaterialId: c.source_material_id ?? null,
     });
   }
 

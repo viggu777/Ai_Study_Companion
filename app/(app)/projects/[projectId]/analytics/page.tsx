@@ -24,13 +24,8 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
   if (error) {
     return (
       <div>
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Analytics — {project.name}</h1>
-          <p className="text-sm text-stone-600">Real aggregations from learning_events, answers, concept_mastery, ai_operations</p>
-        </div>
-        <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
-        </div>
+        <p className="mb-4 text-sm text-stone-500">Real aggregations from learning_events, answers, concept_mastery, ai_operations.</p>
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">{error}</div>
       </div>
     );
   }
@@ -39,12 +34,9 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
 
   return (
       <div>
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Analytics — {project.name}</h1>
-          <p className="text-sm text-stone-600">Real aggregations from learning_events, answers, concept_mastery, ai_operations</p>
-        </div>
+        <p className="mb-4 text-sm text-stone-500">Real aggregations from learning_events, answers, concept_mastery, ai_operations.</p>
 
-      <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 space-y-6">
+      <div className="space-y-6">
         {/* Learning activity */}
         <section>
           <h2 className="text-sm font-semibold text-stone-900 uppercase tracking-wider mb-3">Learning activity</h2>

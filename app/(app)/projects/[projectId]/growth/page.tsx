@@ -27,11 +27,8 @@ export default async function GrowthPage({ params }: { params: Promise<{ project
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Growth — {project.name}</h1>
-        <p className="text-sm text-stone-600">Previous vs current mastery; IMPROVING &gt;+5, STABLE ±5, REQUIRES_ATTENTION &lt;-5</p>
-      </div>
-      <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 space-y-6">
+      <p className="mb-4 text-sm text-stone-500">Previous vs current mastery; IMPROVING &gt;+5, STABLE ±5, REQUIRES_ATTENTION &lt;-5.</p>
+      <div className="space-y-6">
         <div className="bg-white rounded-lg shadow-card border border-stone-200 p-4 flex flex-wrap gap-4 text-sm">
           <span className="px-2 py-1 rounded bg-green-50 text-green-700">Improving: {improving}</span>
           <span className="px-2 py-1 rounded bg-stone-100 text-stone-700">Stable: {stable}</span>

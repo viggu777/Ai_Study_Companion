@@ -11,7 +11,13 @@ export async function PATCH(
   try {
     await requireUserId();
     const { recommendationId } = await params;
-    const { status } = (await req.json()) as { status: string };
+    let body: { status?: unknown };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const { status } = body;
     if (!VALID_STATUSES.includes(status as (typeof VALID_STATUSES)[number])) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 });
     }
