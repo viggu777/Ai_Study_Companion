@@ -66,6 +66,10 @@ Created a single migration file `db/schema/001_initial_schema.sql` containing:
 - pgvector extension enabled; `chunks.embedding` as VECTOR(768) — 768 matches Groq
   `nomic-embed-text-v1.5`; the prompt draft said 1536 (OpenAI ada-002) but the
   implemented model is 768, so the schema and architecture §6 use 768
+  - As-built update (2026-09-17, Task 5): later migrated to `VECTOR(384)` for local
+    `BAAI/bge-small-en-v1.5` (`db/schema/004_embeddings_384.sql`), and `conversations`
+    gained `summary` columns (`005_conversation_summary.sql`). Current schema: see
+    `docs/architecture.md` §6.
 - IVFFlat index on `chunks.embedding` for cosine similarity search (lists=100)
 - Partial unique index on `learning_events` for idempotency on `QUIZ_COMPLETED` and
   `MATERIAL_READY` events

@@ -100,6 +100,11 @@ UI rework, which touched only presentation, not AI behavior).
   in README's project map and architecture-PDF source only insofar as docs describe it;
   `docs/architecture.md` itself was intentionally left byte-identical (it is the submitted
   source of truth; UI theme is not architectural).
+- As-built update (2026-09-17, Task 5): the theme has since moved to stone/sky
+  (`components/ui.tsx`), providers to Mercury-default + local 384 embeddings, tests to
+  158 files-wide with eval run tracking — and `docs/architecture.md` is no longer frozen:
+  Task 5 explicitly reconciled it (§4–§6, §12–§15, §17–§18) plus `evaluation.md`,
+  `limitations.md`, `future-improvements.md`, `ai-tools-usage.md`, and the PDFs above.
 
 # Compact
 

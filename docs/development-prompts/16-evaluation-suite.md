@@ -52,6 +52,10 @@ Implement the testing & evaluation suite (architecture.md §15/§18). Unit/integ
 - **Admin surface:** `app/(app)/admin/ai-evaluation/page.tsx` patched to flatten phase-16 summary shape `{ results: {tutor, retrieval...}, passRate, totalTests}` into rows (`suite: summary` + per-case rows) so the page shows `18 rows from tests/eval/results.json` instead of a single blob.
 
 - Verified `npm test` — 46 passed, `npx tsx tests/eval/run-eval.ts` — 18/18 passed, `npm run build` ✓ Compiled successfully, `npm run lint` ✔ No warnings.
+- As-built update (2026-09-17, Tasks 4–5): suite has grown to 158 tests across 10
+  files; the runner now stamps `runId`/`suiteVersion`, archives previous runs to
+  `tests/eval/history/`, and `/admin/ai-evaluation` shows run-over-run comparison
+  (`services/evaluation.service.ts`). Current state: see `docs/evaluation.md`.
 
 # Changes Made
 
@@ -72,7 +76,7 @@ Implement the testing & evaluation suite (architecture.md §15/§18). Unit/integ
 
 - Rationale for `vitest` over `jest`: ESM-native, works with `paths: {"@/*"}`, no `ts-jest` transform needed, `globals:true` so `describe/it/expect` need no imports boilerplate beyond `vitest`. `tsx` keeps `run-eval.ts` runnable as `npm run eval` without a compiled step.
 - Fixture determinism: Tutor mock outputs are validated through the same `validateTutorResponse` the production `services/tutor.service.ts` uses, so a passing fixture means the production validation would also pass the same shape. Live AI path is best-effort — with dummy `META_API_KEY` it fails `401` and the fixture still passes offline, which satisfies `docs/evaluation.md` “real recorded outputs” without requiring a paid Llama API key in CI.
-- Retrieval fixtures use simulated `similarity` scores (0.87 etc.) to exercise threshold logic offline; production retrieval uses `lib/rag/retrieve.ts:RELEVANCE_THRESHOLD=0.25` + `match_chunks` RPC `VECTOR(768)` cosine. Cross-project fixture (`RET-05`) asserts `WHERE project_id = $projectId` scope — no chunks from another project can leak.
+  - Retrieval fixtures use simulated `similarity` scores (0.87 etc.) to exercise threshold logic offline; production retrieval uses `lib/rag/retrieve.ts:RELEVANCE_THRESHOLD=0.25` + `match_chunks` RPC cosine (`VECTOR(768)` at the time; now `VECTOR(384)` per `004_embeddings_384.sql`). Cross-project fixture (`RET-05`) asserts `WHERE project_id = $projectId` scope — no chunks from another project can leak.
 - Assessment fixtures map to `ai/assessment.ts` schema `score 0-100, understanding, strengths, missingConcepts, reasoningQuality, feedback`; Recommendation fixtures to `ai/recommendation.ts` `validateRecommendationOutput` (`title ≤120, 2-5 items each ≥10 chars, generic guard`). Rubric explicitly checks `titleNamesConcept`, `namesConcept`, `concreteStep (pp./Ch./Tutor/quiz)`, `notGeneric`.
 - Admin wiring: `/admin/ai-evaluation` previously probed four candidate paths but treated a summary object as a single row. Now it flattens `results.tutor|retrieval|...` into rows plus a `summary` row showing `18/18`, so the phase-14 dashboard correctly reflects the burst after phase-16 run.
 - Build exclusion: `tsconfig exclude tests` prevents `vitest` globals and `fixtures.ts` `as const` circular-type issue from breaking `next build` typecheck (verified `next typecheck` would fail on `typeof RETRIEVAL_FIXTURES[0]` self-reference).

@@ -57,7 +57,8 @@ Upload is synchronous validation + Supabase Storage (bucket `materials`, path `u
 
 # Notes
 
-- Meta Llama API has no embeddings endpoint (verified 404 2026-09-15), so embeddings stay on Groq; `chunks.embedding VECTOR(768)` matches.
+  - Meta Llama API has no embeddings endpoint (verified 404 2026-09-15), so embeddings stay on Groq; `chunks.embedding VECTOR(768)` matches.
+  - As-built update (2026-09-17, Task 5): embeddings later moved to local `BAAI/bge-small-en-v1.5` (`VECTOR(384)`, `004_embeddings_384.sql`); neither Mercury nor Meta exposes an embeddings endpoint (both verified 404).
 - Inngest send failure falls back to direct `processMaterial` via `setTimeout` so pipeline works without Inngest Cloud locally.
 - Corrupted PDF path tested via header check + try/catch → FAILED, not stuck PROCESSING.
 

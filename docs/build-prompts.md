@@ -107,6 +107,12 @@ Acceptance check: migration runs cleanly against a fresh Supabase project; RLS b
 manual query for another user's row when tested via the Supabase SQL editor with
 `set role authenticated; set request.jwt.claim.sub = '<other-user-id>';`.
 
+> As-built note (2026-09-17): `chunks.embedding` shipped as `VECTOR(768)` for Groq
+> `nomic-embed-text-v1.5`, then migrated to `VECTOR(384)` for local
+> `BAAI/bge-small-en-v1.5` via `db/schema/004_embeddings_384.sql` (not 1536 as drafted
+> above); `conversations` later gained `summary` columns via
+> `db/schema/005_conversation_summary.sql`.
+
 After acceptance checks pass, run `/compact` before starting the next phase.
 ```
 
@@ -448,6 +454,12 @@ approach in a comment).
 
 Acceptance check: as a non-admin user, /admin/* is inaccessible (redirect or 403); as an
 admin, all six admin pages load with real data from a test account with some activity.
+
+> As-built note (2026-09-17): admin gating shipped as an `ADMIN_EMAILS` /
+> `ADMIN_USER_IDS` allow-list (`lib/auth/admin.ts`), not an `is_admin` column; the
+> section now has eight pages (`dashboard, users, users/[userId], projects, activity,
+> ai-usage, ai-evaluation, jobs, health`) and `/admin/ai-evaluation` includes
+> run-over-run comparison.
 
 After acceptance checks pass, run `/compact` before starting the next phase.
 ```

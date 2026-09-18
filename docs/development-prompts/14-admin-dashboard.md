@@ -67,6 +67,9 @@ Provide the prototype admin surface — global counts, per-user drill-down, proj
 - RLS note: `chunks`/`concepts`/`questions` rely on project-scoped policies; admin reads bypass those via service role, which is required to aggregate across users.
 - Node 20 deprecation warnings from `@supabase/supabase-js` appear during build (`Node.js 20 and below are deprecated`) but do not fail the build; they persist from prior phases.
 - Acceptance check: non-admin → layout `requireAdmin()` redirects to `/dashboard` (no data leak); admin with `ADMIN_EMAILS=<your email>` sees all 7 pages with live data. Manual verification queries listed as footnotes on each page match service calls.
+- As-built update (2026-09-17, Tasks 2/4–5): section now has 8 pages (added
+  `/admin/health` system-health view); `/admin/ai-evaluation` shows run metadata +
+  run-over-run comparison. Current map: see `README.md` project map.
 
 # Compact
 

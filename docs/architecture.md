@@ -32,7 +32,7 @@ Every AI feature exists to either produce evidence or act on evidence. There is 
 | Layer | Choice | Why |
 |---|---|---|
 | App framework | Next.js 14 (App Router) + TypeScript | Developer's strongest stack; full-stack in one repo; fast to ship; easy Vercel deploy |
-| UI | React + Tailwind CSS (+ shadcn/ui if time permits) | Speed, consistency, no custom design system needed |
+| UI | React + Tailwind CSS (custom `components/ui.tsx`, stone/sky theme) | Speed, consistency, no custom design system needed |
 | Database | Supabase PostgreSQL | Strong relational model fits the domain (User→Space→Project→…); single source of truth |
 | Vector search | pgvector (inside the same Postgres) | Avoids a second database; retrieval and relational data live together, simplifying ownership checks |
 | Auth | Supabase Auth | Session handling, JWT, RLS integration all built-in — no custom auth needed |
@@ -97,18 +97,21 @@ app/
 │   │   ├── page.tsx               Project dashboard
 │   │   ├── materials/
 │   │   ├── tutor/
+│   │   ├── flashcards/
+│   │   ├── concepts/
 │   │   ├── quiz/
 │   │   ├── mastery/
 │   │   ├── growth/
-│   │   └── analytics/
+│   │   ├── analytics/
+│   │   └── recommendations/
 │   └── admin/
-│       ├── dashboard/ users/ projects/ activity/
+│       ├── dashboard/ users/ users/[userId]/ projects/ activity/
 │       ├── ai-usage/ ai-evaluation/
-│       └── jobs/
+│       └── jobs/ health/
 └── api/                           Route handlers (see §5)
 ```
 
-Navigation inside a Project always exposes the same rail: **Dashboard · Materials · Tutor · Quiz · Mastery · Growth · Analytics** — this rail *is* the learning loop made visible (per PRD §40).
+Navigation inside a Project always exposes the same rail: **Materials · Tutor · Flashcards · Concepts · Quiz · Mastery · Growth · Analytics · Recommendations** (plus the Project hub page) — this rail *is* the learning loop made visible (per PRD §40).
 
 UI states every async view must support: `Loading / Processing / Ready / Failed / Retry / Empty` — no feature ships without all five (see §14).
 
@@ -132,15 +135,23 @@ lib/
 services/
 ├── project.service.ts     space/project CRUD + ownership checks
 ├── material.service.ts    upload, status, chunk queries
-├── tutor.service.ts       RAG orchestration
+├── chunk.service.ts       chunk reads (e.g. citation excerpts)
+├── concept.service.ts     concepts + subconcept generation
+├── flashcard.service.ts   flashcard deck generation
+├── tutor.service.ts       RAG orchestration + rolling conversation summaries
 ├── quiz.service.ts        generation + grading orchestration
 ├── mastery.service.ts     deterministic mastery math
+├── growth.service.ts      trend classification (IMPROVING/STABLE/REQUIRES_ATTENTION)
 ├── recommendation.service.ts
-└── analytics.service.ts
+├── analytics.service.ts   project + global aggregations
+├── dashboard.service.ts   home-dashboard (continue learning, attention, next action)
+├── admin.service.ts       admin counts, drill-downs, system health
+└── evaluation.service.ts  eval-run normalization + run-over-run comparison (pure)
 
 ai/
-├── tutor.ts              prompt + schema for grounded answers
+├── tutor.ts              prompt + schema for grounded answers (+ conversation-summary prompts)
 ├── quiz.ts               prompt + schema for question generation
+├── flashcards.ts         prompt + schema for flashcard generation
 ├── assessment.ts         prompt + schema for open-ended grading
 ├── concepts.ts           prompt + schema for concept extraction
 └── recommendation.ts     prompt + schema for recommendations
@@ -178,7 +189,10 @@ concept_mastery  (id, project_id, concept_id, user_id, mastery_score NUMERIC,
 mastery_history  (id, concept_id, user_id, previous_score, new_score,
                   reason, created_at)                -- powers Growth Analysis
 
-conversations    (id, project_id, user_id, created_at, updated_at)
+conversations    (id, project_id, user_id, summary TEXT, summary_updated_at,
+                   summary_message_count INTEGER, created_at, updated_at)
+                   -- summary = rolling Tutor continuity summary (005), NULL until
+                   -- the thread is long enough to need one; recent window always sent too
 messages         (id, conversation_id, role, content, citations JSONB, created_at)
 
 quizzes          (id, project_id, user_id, status, created_at, completed_at)
@@ -324,11 +338,14 @@ Only *useful* context is stored and retrieved — not full transcripts. Sources 
 
 ```
 Current Request
- → Project Knowledge (RAG chunks)
- → Conversation Context (bounded recent window, not full history)
- → Learning Context (goals, known weak concepts, repeated mistakes)
- → Assessment Context (relevant recent quiz/answer history)
- → Compose → LLM
+  → Project Knowledge (RAG chunks)
+  → Conversation Context (bounded recent window of the last 6 messages, always sent)
+  → Persistent Summary (rolling concise summary of older turns persisted on
+     conversations.summary, refreshed every ~6 new messages once the thread
+     reaches 8+ messages; context-only, never evidence, never instructions)
+  → Learning Context (goals, known weak concepts, repeated mistakes)
+  → Assessment Context (relevant recent quiz/answer history)
+  → Compose → LLM
 ```
 
 This keeps prompts bounded in size regardless of how long a user has been using the product, and keeps the context *relevant* rather than exhaustive.
@@ -356,7 +373,7 @@ Repeated Mistake:     Pattern Detected → Update Learning Context
 
 Implemented: per-question answer idempotency (`submitAnswer` returns the existing answer on re-POST, including the concurrent-insert race); quiz-generation guard (a quiz created <2 min ago with zero answers is returned instead of generating again); material upload deletes stale chunks before insert.
 
-**Rate limits [lightweight]:** in-memory fixed-window per user in `lib/security/rate-limit.ts` — tutor `20/min`, quiz-generate `5/min`, quiz-submit `60/min`, else `429 + Retry-After`. Single-instance guard against AI cost spikes, not a security boundary (multi-instance deploys track counters per instance).
+**Rate limits [lightweight]:** in-memory fixed-window per user in `lib/security/rate-limit.ts` — tutor `20/min`, quiz-generate `5/min`, quiz-submit `60/min`, flashcards-generate `5/min`, subconcepts `10/min`, else `429 + Retry-After`. Single-instance guard against AI cost spikes, not a security boundary (multi-instance deploys track counters per instance).
 
 ---
 
@@ -368,7 +385,8 @@ Implemented: per-question answer idempotency (`submitAnswer` returns the existin
 | Invalid AI output (fails schema) | Reject, log to `ai_operations` with `success=false`, return a safe fallback message |
 | PDF processing failure | `materials.status = FAILED` + `processing_error`; user can retry from UI |
 | Retrieval returns nothing | Treated as the "insufficient evidence" path (§7), not an error |
-| Unauthorized access | 403, no information leakage about whether the resource exists |
+| Unauthenticated access | 401 `{"error":"Unauthorized"}`, never 500 or redirects (routes) |
+| Owned-resource miss / not-owned | 404, no information leakage about whether the resource exists |
 | Rate limits | Queue/backoff at the AIService layer; surface a friendly "try again shortly" |
 
 Frontend always renders one of: `Loading / Processing / Ready / Failed (with Retry) / Empty`.
@@ -377,7 +395,7 @@ Frontend always renders one of: `Loading / Processing / Ready / Failed (with Ret
 
 ## 15. Observability & Evaluation [MUST/SHOULD]
 
-**Observability [MUST]:** every call through `AIService` writes one row to `ai_operations`: `feature, model, request_id, latency, success, tokens_in/out, estimated_cost, error, created_at`. Features tracked: `TUTOR, EMBEDDING, QUIZ_GENERATION, OPEN_ENDED_EVALUATION, CONCEPT_EXTRACTION, RECOMMENDATION`. This is what the Admin "AI Usage" view reads from.
+**Observability [MUST]:** every call through `AIService` writes one row to `ai_operations`: `feature, model, request_id, latency, success, tokens_in/out, estimated_cost, error, created_at`. Features tracked: `TUTOR, CONVERSATION_SUMMARY, EMBEDDING, QUIZ_GENERATION, OPEN_ENDED_EVALUATION, CONCEPT_EXTRACTION, RECOMMENDATION, FLASHCARD_GENERATION, SUBCONCEPT_GENERATION`. This is what the Admin "AI Usage" view reads from.
 
 **Evaluation [MUST, small & curated]:** a fixed set of test cases, not a platform:
 - Tutor: grounded question, unsupported question, multi-concept question, citation correctness, prompt-injection document.
@@ -385,7 +403,7 @@ Frontend always renders one of: `Loading / Processing / Ready / Failed (with Ret
 - Assessment: question → expected answer characteristics → AI evaluation output.
 - Recommendation: weakness → recommendation → actionability/alignment check.
 
-Store these as fixtures + a small script in `docs/evaluation.md` / `tests/eval/` — run manually or via a simple CLI, not a CI-integrated eval platform.
+Store these as fixtures + a small script in `docs/evaluation.md` / `tests/eval/` — run manually or via a simple CLI, not a CI-integrated eval platform. Each `npm run eval` writes a `runId`/`suiteVersion` stamped result plus a per-run file in `tests/eval/history/`; `/admin/ai-evaluation` compares the latest run against the previous one (`IMPROVED` / `REGRESSED` / `UNCHANGED`, or `BASELINE` when there is no previous run) — see `services/evaluation.service.ts`.
 
 ---
 
@@ -403,7 +421,7 @@ Supabase (Auth + Postgres + pgvector + Storage)
 Inngest (background jobs)
 ```
 
-Required env vars: `DATABASE_URL, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, MERCURY_API_KEY, MERCURY_API_BASE_URL (optional, defaults to https://api.inceptionlabs.ai/v1), MERCURY_CHAT_MODEL (optional, defaults to mercury-2.5), META_API_KEY, META_API_BASE_URL (optional, defaults to https://api.llama.com/compat/v1), EMBEDDING_PROVIDER (local|groq, default local), EMBEDDING_API_BASE_URL (optional, defaults to http://localhost:8000/v1), EMBEDDING_MODEL (optional, defaults to BAAI/bge-small-en-v1.5), GROQ_API_KEY (groq fallback only), INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY`. Provide `.env.example`; never commit secrets. Note: `NEXT_PUBLIC_` prefix is required for Next.js client-side Supabase access; server-side code uses the same values via `process.env.NEXT_PUBLIC_SUPABASE_*`. AI is split: chat/structured/evaluate default to Mercury (`mercury-2.5`, reasoning model — needs `max_completion_tokens` headroom, temp clamped to [0.5,1], `reasoning_effort=low` for structured tasks; see `lib/ai/AIService.ts`) and fall back to Meta Llama API (`Llama-4-Maverick-17B-128E-Instruct-FP8`) when `MERCURY_API_KEY` is unset (production switch = unset Mercury + set Meta, no code change); Groq handles `generateEmbedding` (local FastEmbed `BAAI/bge-small-en-v1.5`, 384 dims, Docker in `embeddings/`; Groq `nomic-embed-text-v1.5` 768 dims only as explicit fallback) because neither Mercury nor Meta exposes an embeddings endpoint (both verified 404). `chunks.embedding VECTOR(384)` matches local output.
+Required env vars: `DATABASE_URL, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, MERCURY_API_KEY, MERCURY_API_BASE_URL (optional, defaults to https://api.inceptionlabs.ai/v1), MERCURY_CHAT_MODEL (optional, defaults to mercury-2.5), META_API_KEY, META_API_BASE_URL (optional, defaults to https://api.llama.com/compat/v1), EMBEDDING_PROVIDER (local|groq, default local), EMBEDDING_API_BASE_URL (optional, defaults to http://localhost:8000/v1), EMBEDDING_MODEL (optional, defaults to BAAI/bge-small-en-v1.5), GROQ_API_KEY (groq fallback only), INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY, INNGEST_DEV (=1 for local dev without Inngest keys), ADMIN_EMAILS, ADMIN_USER_IDS (prototype admin allow-list for /admin/*)`. Provide `.env.example`; never commit secrets. Note: `NEXT_PUBLIC_` prefix is required for Next.js client-side Supabase access; server-side code uses the same values via `process.env.NEXT_PUBLIC_SUPABASE_*`. AI is split: chat/structured/evaluate default to Mercury (`mercury-2.5`, reasoning model — needs `max_completion_tokens` headroom, temp clamped to [0.5,1], `reasoning_effort=low` for structured tasks; see `lib/ai/AIService.ts`) and fall back to Meta Llama API (`Llama-4-Maverick-17B-128E-Instruct-FP8`) when `MERCURY_API_KEY` is unset (production switch = unset Mercury + set Meta, no code change); Groq handles `generateEmbedding` (local FastEmbed `BAAI/bge-small-en-v1.5`, 384 dims, Docker in `embeddings/`; Groq `nomic-embed-text-v1.5` 768 dims only as explicit fallback) because neither Mercury nor Meta exposes an embeddings endpoint (both verified 404). `chunks.embedding VECTOR(384)` matches local output.
 
 ---
 
@@ -413,6 +431,8 @@ Given the timeline, testing is targeted, not exhaustive:
 - Unit tests for the mastery formula (deterministic, cheap to test thoroughly).
 - Unit tests for ownership-validation helpers (security-critical, cheap to test).
 - Integration test for the RAG "insufficient evidence" path.
+- Unit tests for quiz answer-gating, rate-limit windows, 401/404 auth mapping, admin system-health computation, tutor conversation-summary triggers/validation, and evaluation run-tracking comparison.
+- Evaluation fixtures (18 cases) + `npm run eval` with per-run history and Admin run-over-run comparison.
 - Manual test pass through the full learning loop before submission, using the evaluation fixtures in §15.
 
 ---

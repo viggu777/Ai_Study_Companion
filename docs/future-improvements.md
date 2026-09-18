@@ -23,5 +23,18 @@ built now and how the current schema supports adding it later.
    needs richer evidence rendering; later, `concept_mastery.evidence` JSONB already stores
    per-question scores (`question_scores`) ready to visualize.
 7. **AI Learning Coach** — Not built: a cross-project meta-advisor needs the aggregation
-   maturity of the analytics layer first; later, it reads the same `learning_events` +
-   `concept_mastery` + `recommendations` tables the global dashboard already aggregates.
+    maturity of the analytics layer first; later, it reads the same `learning_events` +
+    `concept_mastery` + `recommendations` tables the global dashboard already aggregates.
+
+## Recently implemented (were gaps, now done — 2026-09-17)
+
+- **Tutor conversation summarization** — rolling concise summary of older turns on
+  `conversations.summary` (`db/schema/005_conversation_summary.sql`), sent alongside
+  the 6-message window as context-only.
+- **Evaluation run tracking** — `runId`-stamped runs with capped `tests/eval/history/`
+  and `IMPROVED`/`REGRESSED`/`UNCHANGED`/`BASELINE` comparison in `/admin/ai-evaluation`
+  (`services/evaluation.service.ts`).
+- **Admin System Health** — lightweight `/admin/health` (DB, storage, AI providers,
+  embeddings, jobs, recent failures, overall `HEALTHY`/`DEGRADED`).
+- **Home Dashboard PRD alignment** — Continue Learning, Recent Projects, Overall
+  Progress, Areas Requiring Attention, Recommended Next Action (`services/dashboard.service.ts`).
