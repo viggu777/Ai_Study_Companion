@@ -99,7 +99,7 @@ export default async function ProjectPage({
       stage: "Measure",
       status:
         growth.length === 0
-          ? "Quiz or practice to measure"
+          ? "Quiz, practice, or cards to measure"
           : weakConcepts.length > 0
             ? `${weakConcepts.length} need${weakConcepts.length === 1 ? "s" : ""} attention`
             : "All concepts on track",

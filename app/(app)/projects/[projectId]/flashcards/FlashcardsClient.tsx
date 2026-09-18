@@ -256,15 +256,44 @@ export default function FlashcardsClient({
   const cardKey = card ? card.concept_id : null;
   const cardKnown = cardKey ? known.has(cardKey) : false;
 
+  // Every explicit Got-it / Still-learning is mastery evidence (fire-and-forget).
+  // review_id makes retries idempotent; failures never block studying.
+  const reportReview = useCallback(
+    (conceptId: string, markKnown: boolean) => {
+      try {
+        const reviewId =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        void fetch(`/api/projects/${projectId}/flashcards/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            concept_id: conceptId,
+            result: markKnown ? "known" : "learning",
+            review_id: reviewId,
+          }),
+        }).catch(() => {
+          // best-effort — local known state already updated
+        });
+      } catch {
+        // ignore — studying must never break on telemetry
+      }
+    },
+    [projectId]
+  );
+
   const next = (markKnown: boolean | null) => {
-    if (markKnown !== null && cardKey) {
+    if (markKnown !== null && cardKey && card) {
       const key = cardKey;
+      const conceptId = card.concept_id;
       setKnown((prev) => {
         const nextSet = new Set(prev);
         if (markKnown) nextSet.add(key);
         else nextSet.delete(key);
         return nextSet;
       });
+      reportReview(conceptId, markKnown);
     }
     setFlipped(false);
     if (idx < total - 1) setIdx(idx + 1);
@@ -331,7 +360,8 @@ export default function FlashcardsClient({
             <h2 className="text-lg font-semibold tracking-tight text-stone-900">Flashcards</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
               Pick concepts (grouped by material) or a single material — otherwise the deck auto-builds from your
-              weakest concepts. Set a level, then flip with tap, space, or arrow keys.
+              weakest concepts. Flip with tap, space, or arrow keys.{" "}
+              <span className="font-medium text-stone-600">“Got it” (+recall) and “Still learning” both update Mastery.</span>
             </p>
 
             {/* Material scope */}
