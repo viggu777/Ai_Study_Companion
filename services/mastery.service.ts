@@ -278,13 +278,17 @@ export async function backfillMissingQuizMastery(
   const db = getServiceDb();
   const { data: project } = await db.from("projects").select("space_id").eq("id", projectId).eq("user_id", userId).maybeSingle();
   const spaceId = (project as { space_id: string } | null)?.space_id ?? null;
+  // Chronological replay (oldest-first): mastery is a running chain
+  // new = prev*0.7 + evidence*0.3, so replaying newest-first corrupts the
+  // previous/new linkage and hides real trends (growth needs 2 points per
+  // concept in time order). ASC guarantees quiz1 → quiz2 builds correctly.
   const { data: quizzes } = await db
     .from("quizzes")
     .select("id")
     .eq("project_id", projectId)
     .eq("user_id", userId)
     .eq("status", "completed")
-    .order("completed_at", { ascending: false })
+    .order("completed_at", { ascending: true })
     .limit(Math.max(1, Math.min(limit, 25)));
   const rows = (quizzes ?? []) as Array<{ id: string }>;
   let updated = 0;
@@ -895,9 +899,12 @@ export async function getMasteryOverview(
     UNTESTED: 0, EMERGING: 0, DEVELOPING: 0, PROFICIENT: 0, MASTERED: 0,
   };
   for (const e of entries) distribution[e.level]++;
-  const improving = entries.filter((e) => e.trend === "IMPROVING").length;
-  const attention = entries.filter((e) => e.trend === "REQUIRES_ATTENTION").length;
-  const stable = entries.length - improving - attention;
+  // Same rule as growth: a trend needs 2 results. Single-result ("New") and
+  // untested concepts are NOT stable — otherwise mastery says "stable 8"
+  // while growth says "New 8, stable 0" for the same project.
+  const improving = entries.filter((e) => e.historyCount >= 2 && e.trend === "IMPROVING").length;
+  const attention = entries.filter((e) => e.historyCount >= 2 && e.trend === "REQUIRES_ATTENTION").length;
+  const stable = entries.filter((e) => e.historyCount >= 2 && e.trend === "STABLE").length;
 
   return {
     entries,

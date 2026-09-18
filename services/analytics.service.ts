@@ -28,8 +28,9 @@ export interface ProjectAnalytics {
     perConcept: Array<{ conceptId: string; name: string; mastery: number | null }>;
     avgMastery: number | null;
     improvingCount: number;
-    stableCount: number; // tested concepts with no significant move (excludes untested)
+    stableCount: number; // 2+ results with no significant move (excludes New + untested, like Growth)
     requiresAttentionCount: number;
+    newCount: number; // exactly 1 result — evidence without a trend yet (Growth "New")
     untestedCount: number; // concepts with zero mastery_history rows
     totalConcepts: number;
   };
@@ -216,11 +217,13 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
   }
 
   // Trend counts via the shared growth rule (batched into ONE query).
-  // Concepts with zero history are "untested" — never counted as stable, so
-  // the badges always reconcile: improving + stable + attention + untested = total.
+  // A trend needs 2 results — exactly like Growth. Single-result concepts are
+  // "New" (never stable), zero-history are "untested", so the badges always
+  // reconcile: improving + stable + attention + new + untested = total.
   let improvingCount = 0;
   let stableCount = 0;
   let requiresAttentionCount = 0;
+  let newCount = 0;
   let untestedCount = 0;
   let flashcardReviews = 0;
   if (concepts.length > 0) {
@@ -251,6 +254,10 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
       const h = histByConcept.get(c.id) ?? [];
       if (h.length === 0) {
         untestedCount++;
+        continue;
+      }
+      if (h.length < 2) {
+        newCount++;
         continue;
       }
       const { trend } = summarizeHistoryTrend(h);
@@ -337,6 +344,7 @@ export async function getProjectAnalytics(projectId: string): Promise<ProjectAna
       improvingCount,
       stableCount,
       requiresAttentionCount,
+      newCount,
       untestedCount,
       totalConcepts: concepts.length,
     },

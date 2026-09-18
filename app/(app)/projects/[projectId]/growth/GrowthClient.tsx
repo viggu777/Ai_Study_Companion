@@ -111,7 +111,9 @@ export default function GrowthClient({
       total: entries.length,
       improving: entries.filter((e) => e.trend === "IMPROVING" && !isNew(e)).length,
       stable: entries.filter((e) => e.trend === "STABLE" && !isNew(e)).length,
-      attention: entries.filter((e) => e.trend === "REQUIRES_ATTENTION").length,
+      // REQUIRES_ATTENTION implies 2+ results (single-result is STABLE+null),
+      // but guard with !isNew anyway so the three trend buckets + New always reconcile.
+      attention: entries.filter((e) => e.trend === "REQUIRES_ATTENTION" && !isNew(e)).length,
       fresh: entries.filter((e) => isNew(e)).length,
       avgDelta,
       hasTrendData: entries.some((e) => e.historyCount >= 2),

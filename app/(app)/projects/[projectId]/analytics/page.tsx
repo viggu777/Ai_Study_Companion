@@ -148,6 +148,7 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
                 </h2>
                 <span className="tnum text-xs text-stone-500">
                   {a.mastery.improvingCount} improving · {a.mastery.requiresAttentionCount} need attention
+                  {a.mastery.newCount > 0 ? ` · ${a.mastery.newCount} new` : ""}
                   {a.mastery.untestedCount > 0 ? ` · ${a.mastery.untestedCount} not yet tested` : ""}
                 </span>
               </div>
@@ -341,6 +342,9 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ proj
                 <Badge tone={a.mastery.requiresAttentionCount > 0 ? "danger" : "neutral"}>
                   {a.mastery.requiresAttentionCount} need attention
                 </Badge>
+                {a.mastery.newCount > 0 && (
+                  <Badge tone="accent">{a.mastery.newCount} new</Badge>
+                )}
                 {a.mastery.untestedCount > 0 && (
                   <Badge tone="accent">{a.mastery.untestedCount} not yet tested</Badge>
                 )}

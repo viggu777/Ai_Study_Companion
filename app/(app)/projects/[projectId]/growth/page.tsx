@@ -9,7 +9,7 @@ import GrowthClient from "./GrowthClient";
 
 export default async function GrowthPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  await getCurrentUser();
+  const user = await getCurrentUser();
   // Independent queries — start together so DB round-trips overlap.
   const projectPromise = getProject(projectId);
   const growthPromise = getGrowthAnalysis(projectId);
@@ -20,6 +20,19 @@ export default async function GrowthPage({ params }: { params: Promise<{ project
   let error: string | null = null;
   try {
     growth = await growthPromise;
+    // Self-heal: a completed quiz that never reached the mastery worker leaves
+    // every concept at 0-1 history rows, so Growth shows all-New zeros even
+    // after 2 quizzes. If no concept has 2 results yet, replay missing quiz
+    // mastery inline (idempotent, oldest-first) and re-read once.
+    if (growth.length > 0 && growth.every((e) => e.historyCount < 2)) {
+      try {
+        const { backfillMissingQuizMastery } = await import("@/services/mastery.service");
+        const healed = await backfillMissingQuizMastery(projectId, user.id, 10);
+        if (healed.updated > 0) growth = await getGrowthAnalysis(projectId);
+      } catch {
+        // best-effort — the no-trend UI below still renders fine
+      }
+    }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }

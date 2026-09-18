@@ -71,7 +71,7 @@ export default async function ProjectPage({
     .filter((g) => g.trend === "REQUIRES_ATTENTION" || (g.currentScore ?? 0) < 60)
     .sort((a, b) => (a.currentScore ?? -1) - (b.currentScore ?? -1))
     .slice(0, 3);
-  const improvingCount = growth.filter((g) => g.trend === "IMPROVING").length;
+  const improvingCount = growth.filter((g) => g.trend === "IMPROVING" && g.delta !== null).length;
 
   // Ordered learning loop: Material → Tutor → Quiz → Practice → Mastery → Growth → Recommendation.
   const loopSteps = [

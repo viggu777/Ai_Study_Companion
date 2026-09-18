@@ -34,16 +34,21 @@ export default async function MasteryPage({
   let error: string | null = null;
   try {
     overview = await overviewPromise;
-    // Self-heal: a zero-evidence map with finished quizzes means those
-    // completions never reached the mastery worker (see backfill helper).
-    // Recompute inline (idempotent) and re-read once so the page reflects
-    // real progress instead of a stuck 0/8.
-    if (
+    // Self-heal: finished quizzes that never reached the mastery worker leave
+    // zero evidence — or partial evidence where an older quiz was skipped and
+    // every concept sits at 0-1 history rows (Growth then shows all-New zeros
+    // even after 2 quizzes). Recompute inline (idempotent, oldest-first) and
+    // re-read once so pages reflect real progress instead of stuck zeros.
+    const noEvidence =
       overview &&
       overview.summary.quizEvents === 0 &&
       overview.summary.practiceEvents === 0 &&
-      overview.summary.flashcardReviews === 0
-    ) {
+      overview.summary.flashcardReviews === 0;
+    const noTrends =
+      overview &&
+      overview.entries.length > 0 &&
+      overview.entries.every((e) => e.historyCount < 2);
+    if (overview && (noEvidence || noTrends)) {
       try {
         const user = await getCurrentUser();
         const healed = await backfillMissingQuizMastery(projectId, user.id, 10);
