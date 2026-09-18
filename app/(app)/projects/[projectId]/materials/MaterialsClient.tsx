@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, EmptyState, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { BookIcon, UploadIcon } from "@/components/icons";
@@ -30,15 +30,25 @@ function StatusBadge({ status }: { status: Material["status"] }) {
 export default function MaterialsClient({
   projectId,
   initialMaterials,
+  initialHighlightId,
 }: {
   projectId: string;
   initialMaterials: Material[];
+  /** deep-link: highlight + scroll to this material's row (e.g. from the dashboard) */
+  initialHighlightId?: string | null;
 }) {
   const [materials, setMaterials] = useState<Material[]>(initialMaterials);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const highlightRef = useRef<HTMLTableRowElement | null>(null);
+
+  // Deep-linked material: scroll it into view on first paint.
+  useEffect(() => {
+    if (initialHighlightId) highlightRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -199,7 +209,13 @@ export default function MaterialsClient({
               </thead>
               <tbody className="divide-y divide-stone-200">
                 {materials.map((m) => (
-                  <tr key={m.id} className="transition-colors hover:bg-stone-50/70">
+                  <tr
+                    key={m.id}
+                    ref={m.id === initialHighlightId ? highlightRef : undefined}
+                    className={`transition-colors hover:bg-stone-50/70 ${
+                      m.id === initialHighlightId ? "bg-sky-50/70" : ""
+                    }`}
+                  >
                     <td className="max-w-[220px] px-4 py-3 font-medium text-stone-900">
                       <span className="block truncate" title={m.filename}>{m.filename}</span>
                       {m.status === "FAILED" && m.processing_error && (

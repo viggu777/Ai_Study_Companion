@@ -6,11 +6,14 @@ import MaterialsClient from "./MaterialsClient";
 
 export default async function MaterialsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ projectId: string }>;
+  searchParams?: Promise<{ material?: string }>;
 }) {
   const { projectId } = await params;
   await getCurrentUser();
+  const highlightId = (await searchParams)?.material?.trim() || null;
   // Independent queries — start together so DB round-trips overlap.
   const projectPromise = getProject(projectId);
   const materialsPromise = listMaterials(projectId);
@@ -27,13 +30,8 @@ export default async function MaterialsPage({
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Materials — {project.name}</h1>
-        <p className="text-sm text-stone-600">Upload PDFs; processing is background (QUEUED → PROCESSING → READY)</p>
-      </div>
-      <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-        <MaterialsClient projectId={projectId} initialMaterials={initialMaterials} />
-      </div>
+      <p className="mb-4 text-sm text-stone-500">Upload PDFs; processing is background (QUEUED → PROCESSING → READY).</p>
+      <MaterialsClient projectId={projectId} initialMaterials={initialMaterials} initialHighlightId={highlightId} />
     </div>
   );
 }

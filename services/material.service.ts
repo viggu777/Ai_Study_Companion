@@ -8,6 +8,20 @@ import { logAiOperation } from "@/lib/ai/observability";
 
 const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
 
+/**
+ * Statuses a background worker may atomically claim for processing.
+ * Uploads create QUEUED rows; retry resets to QUEUED; FAILED rows are
+ * claimable so a direct-fallback worker can pick up work even if the
+ * retry event is lost. READY (done) and PROCESSING (owned by a live
+ * worker) are never claimable — this is the concurrency guard.
+ * Pure — unit-tested in tests/unit/job-guards.test.ts.
+ */
+export const CLAIMABLE_MATERIAL_STATUSES = ["QUEUED", "FAILED"] as const;
+
+export function canClaimMaterialStatus(status: string): boolean {
+  return (CLAIMABLE_MATERIAL_STATUSES as readonly string[]).includes(status);
+}
+
 async function emitLearningEvent(params: {
   userId: string;
   spaceId?: string | null;
@@ -287,10 +301,21 @@ export async function processMaterial(materialId: string) {
   // Idempotency: if already READY, skip
   if ((material as { status?: string }).status === "READY") return;
 
-  await db
-      .from("materials")
-      .update({ status: "PROCESSING", updated_at: new Date().toISOString() })
-      .eq("id", materialId);
+  // Concurrency guard: atomically claim the job. Upload creates QUEUED rows
+  // and retry resets to QUEUED, so only those states are claimable — if two
+  // workers (Inngest + direct fallback, double retry) race, exactly one wins
+  // the conditional update and the loser returns without duplicating chunks.
+  const { data: claimed } = await db
+    .from("materials")
+    .update({ status: "PROCESSING", updated_at: new Date().toISOString() })
+    .eq("id", materialId)
+    .in("status", [...CLAIMABLE_MATERIAL_STATUSES])
+    .select("id");
+  if (!claimed || (claimed as unknown[]).length === 0) return;
+
+  // Page count of the source PDF, when known — assigned during extraction
+  // so the failure path can persist it too (e.g. scanned PDFs).
+  let numPages: number | null = null;
 
   // Use service DB directly for background events (no request cookies)
   await db.from("learning_events").insert({
@@ -306,10 +331,19 @@ export async function processMaterial(materialId: string) {
   try {
     // 2. Extract text
     const buffer = await downloadPdf(material.storage_path);
-    const { text, numPages } = await extractPdfText(buffer);
+    const extracted = await extractPdfText(buffer);
+    const text = extracted.text;
+    numPages = extracted.numPages;
 
     if (!text || text.trim().length < 20) {
-      throw new Error("No extractable text found in PDF");
+      // Empty extraction + real pages almost always means a scanned /
+      // image-only PDF. We have no OCR yet, so fail with an actionable
+      // message instead of a generic error.
+      throw new Error(
+        numPages > 0
+          ? `No extractable text found in this PDF (${numPages} page${numPages === 1 ? "" : "s"}). It looks like a scanned or image-only document, and OCR is not supported yet. Please upload a PDF with selectable text.`
+          : "No extractable text found in PDF"
+      );
     }
 
     // 3. Chunk
@@ -478,6 +512,9 @@ export async function processMaterial(materialId: string) {
       .update({
         status: "FAILED",
         processing_error: msg.slice(0, 2000),
+        // numPages may be known even when extraction yielded no text
+        // (e.g. scanned PDFs) — keep it so the UI can show page info.
+        ...(typeof numPages === "number" ? { page_count: numPages } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq("id", materialId);
