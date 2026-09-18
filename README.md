@@ -8,8 +8,8 @@ get tested via an **Adaptive Quiz** (MCQ + open-ended), and watch the system tra
 **Recommendations**. Every AI feature either produces evidence or acts on evidence —
 the closed learning loop in `docs/architecture.md`.
 
-**Live deployment:** not yet deployed — follow `docs/development-prompts/18-deployment.md`
-(Vercel import + env vars + Inngest Cloud sync), then put the URL here.
+**Live deployment:** https://ai-study-companion-three-inky.vercel.app/
+(Vercel + Supabase + Inngest Cloud — see Deployment information below).
 
 ## Setup
 
@@ -48,8 +48,10 @@ the closed learning loop in `docs/architecture.md`.
 3. Run the database migrations (`db/schema/README.md`): apply
    `db/schema/001_initial_schema.sql`, then `002_retrieve.sql`,
    then `003_storage.sql`, then `004_embeddings_384.sql`, then
-   `005_conversation_summary.sql`, then `006_embeddings_gemini_768.sql`
-   in order via the
+   `005_conversation_summary.sql`, then `006_embeddings_gemini_768.sql`,
+   then `007_practice.sql`, `008_practice_mcq.sql`,
+   `009_practice_sections.sql`, `010_material_dedup.sql`
+   in order via `npm run migrate` (recommended) or the
    Supabase SQL Editor, ensuring the `materials` Storage bucket exists (private).
 
 4. Run the development server:
@@ -81,7 +83,7 @@ curated report is `docs/evaluation.md`.
 - `app/` — routes: `/` (session-aware redirect), `/login`, `/signup`, `/dashboard`,
   `/spaces`, `/spaces/[spaceId]`, `/profile`,
   `/projects/[projectId]` (project hub) + `{materials,tutor,quiz,mastery,growth,analytics,recommendations,flashcards,concepts}`,
-  `/admin/{dashboard,users,projects,activity,ai-usage,ai-evaluation,jobs,health}` (plus `/admin/users/[userId]` drill-down),
+  `/admin/{dashboard,users,spaces,projects,activity,engagement,learning,ai-usage,ai-evaluation,jobs,health}` (plus `/admin/users/[userId]` drill-down),
   plus thin API route handlers (`app/api/*` call `services/`, never the DB directly).
 - `components/Sidebar.tsx` — shared sidebar shell (workspace / project / admin sections, mobile drawer).
 - `services/` + `lib/` + `ai/` — service layer, RAG/Auth/DB helpers, and prompt+schema definitions per feature.
@@ -126,18 +128,23 @@ is gitignored). Canonical key list lives in `docs/architecture.md` §17.
 
 ## Deployment information
 
-**Status: not deployed.** No production URL, no Inngest Cloud sync, no demo
-video — do not treat this snapshot as live.
+**Status: live.** Production URL: https://ai-study-companion-three-inky.vercel.app/
 
 Deployment architecture: Vercel (Next.js app) + Supabase (Postgres/pgvector,
-Auth, Storage) + Inngest (background jobs) + local-embeddings Docker host (or
-Groq fallback). Steps: import the repo in Vercel, set all `.env.example` keys
-in Vercel + Inngest, run migrations `001`→`005` on the Supabase project,
+Auth, Storage) + Inngest (background jobs) + Google Gemini embeddings.
+Steps: import the repo in Vercel, set all `.env.example` keys
+in Vercel + Inngest, run migrations `001`→`010` via `npm run migrate`
+(or Supabase SQL Editor in order),
 ensure the private `materials` bucket exists, sync `/api/inngest` in Inngest
 Cloud, then smoke-test the full loop on the live URL (signup → space/project
 → PDF → READY → Tutor → quiz → mastery/growth/recommendations). Full
 checklist: `docs/development-prompts/18-deployment.md`; env reference:
 `docs/architecture.md` §17.
+
+Production hardening already shipped (see `git log`): inline material
+processing fallback + `maxDuration=60` so Vercel serverless never leaves
+materials stuck in QUEUED when Inngest delivery fails, retry always
+processes inline, Gemini 768-d embeddings with purge + reindex.
 
 ## Known limitations
 
@@ -151,5 +158,5 @@ Prototype scope (2–3 days) — honest short list, full detail in
 - Evaluation is 18 curated fixtures + 158 unit/integration tests with
   file-based run tracking — no LLM-as-judge, no CI gating.
 - Rate limiting is a single-instance cost guard; no response caching or token
-  streaming; uploads validate type/size but have no per-user quota.
-- No live deployment yet (see above).
+  streaming; uploads validate type/size plus SHA-256 duplicate detection but have no per-user quota.
+- Live at https://ai-study-companion-three-inky.vercel.app/ — demo video still pending.
