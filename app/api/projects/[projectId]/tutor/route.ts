@@ -10,12 +10,16 @@ export async function GET(
   try {
     await requireUserId();
     const { projectId } = await params;
-    const history = await getTutorHistory(projectId);
+    const url = new URL(request.url);
+    const conversationId = url.searchParams.get("conversationId");
+    const history = await getTutorHistory(projectId, conversationId);
     return NextResponse.json(history);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
+    if (msg.includes("Project not found") || msg.includes("Conversation not found")) {
+      return NextResponse.json({ error: msg }, { status: 404 });
+    }
     return NextResponse.json({ error: "Failed to fetch tutor history" }, { status: 500 });
   }
 }
@@ -28,16 +32,23 @@ export async function POST(
     const userId = await requireUserId();
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
-    const question = (body.question as string) ?? (body.q as string) ?? "";
+    const rawQuestion = (body.question as unknown) ?? (body.q as unknown) ?? "";
+    const question = typeof rawQuestion === "string" ? rawQuestion : "";
     if (!question.trim()) return NextResponse.json({ error: "Question is required" }, { status: 400 });
     const rl = checkRateLimit(`tutor:${userId}`, 20, 60_000);
     if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
-    const result = await askTutor(projectId, question);
+    const conversationId =
+      typeof body.conversationId === "string" && body.conversationId.trim()
+        ? body.conversationId.trim()
+        : null;
+    const result = await askTutor(projectId, question, conversationId);
     return NextResponse.json(result);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
+    if (msg.includes("Project not found") || msg.includes("Conversation not found")) {
+      return NextResponse.json({ error: msg }, { status: 404 });
+    }
     if (msg.includes("Question is required") || msg.includes("too long")) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }

@@ -5,23 +5,20 @@ import TutorClient from "./TutorClient";
 
 export default async function TutorPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ projectId: string }>;
+  searchParams?: Promise<{ q?: string }>;
 }) {
   const { projectId } = await params;
   await getCurrentUser();
   const project = await getProject(projectId);
   if (!project) notFound();
+  const initialQuestion = (await searchParams)?.q?.trim().slice(0, 500) || null;
 
   return (
-    <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Tutor — {project.name}</h1>
-        <p className="text-sm text-stone-600">Grounded in your Project materials, with citations</p>
-      </div>
-      <div className="max-w-4xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-        <TutorClient projectId={projectId} />
-      </div>
+    <div className="-mx-4 -my-6 sm:-mx-6">
+      <TutorClient projectId={projectId} initialQuestion={initialQuestion} />
     </div>
   );
 }
