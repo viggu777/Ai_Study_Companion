@@ -135,6 +135,8 @@ const adminNav: NavItem[] = [
   { href: "/admin/spaces", label: "Spaces", icon: FolderIcon },
   { href: "/admin/projects", label: "Projects", icon: BookIcon },
   { href: "/admin/activity", label: "Activity", icon: ActivityIcon },
+  { href: "/admin/engagement", label: "Engagement", icon: TrendUpIcon },
+  { href: "/admin/learning", label: "Learning", icon: ChartIcon },
   { href: "/admin/ai-usage", label: "AI Usage", icon: CpuIcon },
   { href: "/admin/ai-evaluation", label: "AI Evaluation", icon: FlaskIcon },
   { href: "/admin/jobs", label: "Jobs", icon: JobsIcon },
