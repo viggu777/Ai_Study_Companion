@@ -500,8 +500,11 @@ cp .env.example .env.local   # fill 18 vars (§10); INNGEST_DEV=1 for local
 #   db/schema/001_initial_schema.sql
 #   db/schema/002_retrieve.sql
 #   db/schema/003_storage.sql
-#   db/schema/004_embeddings_384.sql   # must match EMBEDDING_PROVIDER=local
-cd embeddings && docker compose up -d --build && cd ..   # :8000 /health → 384
+#   db/schema/004_embeddings_384.sql   # historical (local FastEmbed era — removed)
+#   db/schema/005_conversation_summary.sql
+#   db/schema/006_embeddings_gemini_768.sql   # live: Gemini gemini-embedding-001, VECTOR(768)
+#   ... through 011_material_file_size.sql (see db/schema/README.md for full order)
+# No Docker needed — embeddings are Gemini API (GEMINI_API_KEY). The old embeddings/ FastEmbed service was removed.
 npm run dev                    # :3000 → /login (or /dashboard if signed in)
 npx inngest-cli dev            # optional; direct fallback works without it
 npm test && npm run eval && npm run typecheck && npm run lint && npm run build
