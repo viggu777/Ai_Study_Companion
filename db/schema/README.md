@@ -27,7 +27,7 @@ Requires `DATABASE_URL` in `.env.local` (see `.env.example`).
 
 1. Open your Supabase project dashboard
 2. Go to **SQL Editor**
-3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` then `003_storage.sql` then `004_embeddings_384.sql` then `005_conversation_summary.sql` then `006_embeddings_gemini_768.sql` then `007_practice.sql` then `008_practice_mcq.sql` then `009_practice_sections.sql` then `010_material_dedup.sql` (in order)
+3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` then `003_storage.sql` then `004_embeddings_384.sql` then `005_conversation_summary.sql` then `006_embeddings_gemini_768.sql` then `007_practice.sql` then `008_practice_mcq.sql` then `009_practice_sections.sql` then `010_material_dedup.sql` then `011_material_file_size.sql` then `012_embeddings_gemini2_768.sql` (in order)
 4. Paste into a new query and run it
 
 ### Option 2: Supabase CLI
@@ -83,6 +83,6 @@ SELECT * FROM spaces; -- Should return 0 rows for other user's data
 
 - The migration enables the `pgvector` extension for embeddings
 - All user-owned tables have RLS enabled with `user_id = auth.uid()` policies
-- The `chunks.embedding` column is `VECTOR(768)` (Google Gemini `gemini-embedding-001` via `@google/genai`) with an IVFFlat index for cosine similarity search — migrated by `006_embeddings_gemini_768.sql`, which also purges incompatible old chunks (bge-small 384d / nomic 768d). Never mix dimensions/models.
+- The `chunks.embedding` column is `VECTOR(768)` (Google Gemini `gemini-embedding-2` via `@google/genai`, instruction-prefixed: documents `title: ... | text: ...`, queries `task: search result | query: ...`) with an IVFFlat index for cosine similarity search — migrated by `012_embeddings_gemini2_768.sql`, which also purges incompatible `gemini-embedding-001` chunks (same 768 dims, different embedding space; earlier bge-small 384d / nomic 768d were purged by `006`). Never mix dimensions/models.
 - A unique partial index on `learning_events` prevents duplicate processing of `QUIZ_COMPLETED` and `MATERIAL_READY` events
 - Foreign keys use `ON DELETE CASCADE` following the hierarchy: User → Space → Project → child entities

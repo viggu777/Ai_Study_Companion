@@ -61,7 +61,7 @@ async function smokeTest() {
       } else throw e;
     }
 
-    console.log('\n3. Testing generateEmbedding (Gemini gemini-embedding-001, 768 dims)...');
+    console.log('\n3. Testing generateEmbedding (Gemini gemini-embedding-2, 768 dims)...');
     try {
       const embeddingResult = await aiService.generateEmbedding({
         input: 'Hello world',

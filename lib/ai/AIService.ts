@@ -9,15 +9,17 @@
  *   Mercury uses `max_completion_tokens` instead of `max_tokens` — mapped below.
  *   Env: MERCURY_API_KEY (or INCEPTION_API_KEY alias), MERCURY_API_BASE_URL
  *   (optional), MERCURY_CHAT_MODEL (optional, defaults to mercury-2.5).
- * - Embeddings → Google Gemini Embeddings API (`gemini-embedding-001`,
+ * - Embeddings → Google Gemini Embeddings API (`gemini-embedding-2`,
  *   768 dims via outputDimensionality truncation, Free Tier eligible).
  *   Neither Mercury (verified 404 on POST /v1/embeddings) nor Meta's Llama API
  *   (verified 404) exposes an embeddings endpoint. chunks.embedding is
- *   VECTOR(768) per db/schema/006_embeddings_gemini_768.sql. Never mix vectors
- *   from different models — old bge-small (384d) / nomic (768d) rows must be
- *   purged + re-embedded via Retry (see 006 migration).
+ *   VECTOR(768) per db/schema/012_embeddings_gemini2_768.sql. Never mix vectors
+ *   from different models — old gemini-embedding-001 (768d) rows are
+ *   model-incompatible (different embedding space) even though the dimension
+ *   collides, so they must be purged + re-embedded via Retry (see 012
+ *   migration). Older bge-small (384d) / nomic (768d) rows were purged by 006.
  *   Env: GEMINI_API_KEY (required, server-only), GEMINI_EMBEDDING_MODEL
- *   (optional, defaults to gemini-embedding-001), GEMINI_EMBEDDING_DIM
+ *   (optional, defaults to gemini-embedding-2), GEMINI_EMBEDDING_DIM
  *   (optional, defaults to 768 — must match chunks.embedding).
  *
  * Interface is stable so callers never need to know which provider handled what.
@@ -32,12 +34,14 @@ const MERCURY_CHAT_MODEL = process.env.MERCURY_CHAT_MODEL || "mercury-2.5";
 
 // Embeddings — Google Gemini Embeddings API (single provider for both
 // document chunks and query embeddings — same model + same config).
-// Default: gemini-embedding-001 with outputDimensionality=768 (Matryoshka
-// truncation; 3072 native). 768 keeps storage/vector-search cost low and is
-// more than sufficient given the previous 384-dim model worked. Override via
-// GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIM only together with a matching
-// chunks.embedding migration. Never mix dimensions in chunks.embedding.
-const GEMINI_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+// Default: gemini-embedding-2 with outputDimensionality=768 (Matryoshka
+// truncation; 3072 native). 768 is a Google-recommended size (768 / 1536 /
+// 3072), keeps storage/vector-search cost low, and preserves the existing
+// chunks.embedding VECTOR(768) column so no resize is needed — only a
+// model-space purge (012 migration). Override via GEMINI_EMBEDDING_MODEL /
+// GEMINI_EMBEDDING_DIM only together with a matching chunks.embedding
+// migration. Never mix dimensions or models in chunks.embedding.
+const GEMINI_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-2";
 const GEMINI_EMBEDDING_DIM = (() => {
   const raw = process.env.GEMINI_EMBEDDING_DIM || "768";
   const parsed = parseInt(raw, 10);
@@ -90,10 +94,6 @@ function getMercuryApiKey(): string | undefined {
   return process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
 }
 
-function isMercuryActive(): boolean {
-  return !!getMercuryApiKey();
-}
-
 interface ChatClient {
   client: OpenAI;
   model: string;
@@ -128,6 +128,28 @@ export function getActiveEmbeddingInfo(): { provider: string; model: string; dim
   return { provider: "gemini", model: GEMINI_EMBEDDING_MODEL, dimension: GEMINI_EMBEDDING_DIM };
 }
 
+/**
+ * Gemini Embedding 2 instruction formatting (asymmetric retrieval).
+ * The `task_type` parameter from Embedding 1 (RETRIEVAL_DOCUMENT /
+ * RETRIEVAL_QUERY / ...) is not supported by gemini-embedding-2 — passing it
+ * is silently ignored at best. Instead the task is expressed in the text:
+ * queries carry a `task: ... | query:` prefix, documents carry a
+ * `title: ... | text:` structure. Both sides must use the same task
+ * ("search result" here — the generic retrieval task covering tutor
+ * questions and /retrieve queries) or similarity is meaningless.
+ * Pure — unit-tested in tests/unit/embedding-gemini2.test.ts.
+ */
+export const EMBEDDING_QUERY_TASK = "search result";
+
+export function formatQueryForEmbedding(query: string): string {
+  return `task: ${EMBEDDING_QUERY_TASK} | query: ${query.trim()}`;
+}
+
+export function formatDocumentForEmbedding(content: string, title?: string): string {
+  const cleanTitle = (title ?? "").trim() || "none";
+  return `title: ${cleanTitle} | text: ${content}`;
+}
+
 export interface GenerateTextOptions {
   systemPrompt: string;
   userPrompt: string;
@@ -146,6 +168,21 @@ export interface GenerateStructuredOptions<T> {
 
 export interface GenerateEmbeddingOptions {
   input: string | string[];
+  /**
+   * Retrieval role for Gemini Embedding 2 instruction prefixes
+   * (https://ai.google.dev/gemini-api/docs/embeddings — task_type is NOT
+   * supported by gemini-embedding-2; the task is expressed in the prompt):
+   * - "document": each input is formatted as `title: {title} | text: {input}`
+   *   (asymmetric document side). Pass the source filename as `title`.
+   * - "query": the input is formatted as
+   *   `task: search result | query: {input}` (asymmetric query side).
+   * - omitted: raw passthrough (generic/symmetric use, e.g. smoke tests).
+   * Doc and query sides must always use the matching pair above so both
+   * vectors live in the same instruction-conditioned space.
+   */
+  purpose?: "document" | "query";
+  /** Document title for purpose="document" (e.g. chunk source filename). */
+  title?: string;
 }
 
 export interface EvaluateOptions {
@@ -273,16 +310,24 @@ export const aiService: AIService = {
     return validateStructuredOutput<T>(parsed, schema);
   },
 
-  async generateEmbedding({ input }: GenerateEmbeddingOptions) {
+  async generateEmbedding({ input, purpose, title }: GenerateEmbeddingOptions) {
     // Single embedding path for BOTH document chunks and user queries —
-    // same Gemini model + same outputDimensionality, so doc and query vectors
-    // are always comparable. Do not introduce separate taskType configs here.
+    // same Gemini model + same outputDimensionality, plus the matching
+    // Embedding-2 instruction pair (document ↔ query), so doc and query
+    // vectors are always comparable. Do not pass taskType: Embedding 2 does
+    // not support it — the task lives in the formatted text instead.
     const info = getActiveEmbeddingInfo();
     const model = info.model;
     const inputs = Array.isArray(input) ? input : [input];
     if (inputs.length === 0 || inputs.some((t) => typeof t !== "string" || t.trim().length === 0)) {
       throw new Error("generateEmbedding: input must be a non-empty string or list of non-empty strings");
     }
+    const texts =
+      purpose === "query"
+        ? inputs.map((t) => formatQueryForEmbedding(t))
+        : purpose === "document"
+          ? inputs.map((t) => formatDocumentForEmbedding(t, title))
+          : inputs;
     let client: GoogleGenAI;
     try {
       client = getGeminiClient();
@@ -291,9 +336,13 @@ export const aiService: AIService = {
     }
     let response;
     try {
+      // NOTE: gemini-embedding-2 aggregates a bare string[] into ONE vector.
+      // Each input must be wrapped in its own Content object ({ parts: [...] })
+      // to get one embedding per input (verified live). Keep batching at the
+      // caller (20 per request).
       response = await client.models.embedContent({
         model,
-        contents: inputs,
+        contents: texts.map((t) => ({ parts: [{ text: t }] })),
         config: { outputDimensionality: info.dimension },
       });
     } catch (e) {
@@ -391,11 +440,18 @@ export const aiService: AIService = {
     return { data: validateStructuredOutput<T>(parsed, schema), usage: extractChatUsage(completion) };
   },
 
-  async generateEmbeddingWithUsage({ input }: GenerateEmbeddingOptions) {
-    const vectors = await aiService.generateEmbedding({ input });
+  async generateEmbeddingWithUsage({ input, purpose, title }: GenerateEmbeddingOptions) {
+    const vectors = await aiService.generateEmbedding({ input, purpose, title });
     const inputs = Array.isArray(input) ? input : [input];
     // Gemini embedContent does not return token counts — estimate ~1 token / 4 chars.
-    const inputTokens = inputs.reduce((sum, t) => sum + Math.max(1, Math.ceil(t.length / 4)), 0);
+    // Count the formatted text actually sent (prefixes included) when a purpose is set.
+    const sent =
+      purpose === "query"
+        ? inputs.map((t) => formatQueryForEmbedding(t))
+        : purpose === "document"
+          ? inputs.map((t) => formatDocumentForEmbedding(t, title))
+          : inputs;
+    const inputTokens = sent.reduce((sum, t) => sum + Math.max(1, Math.ceil(t.length / 4)), 0);
     return { vectors, usage: { inputTokens, outputTokens: 0 } };
   },
 

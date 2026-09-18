@@ -1,16 +1,29 @@
 #!/usr/bin/env tsx
 /**
- * Re-index materials with Gemini embeddings (gemini-embedding-001, 768d).
+ * Re-index materials with Gemini Embedding 2 (gemini-embedding-2, 768d).
  *
- * Safe migration path — never mixes old-model vectors with Gemini vectors:
- *  1. Apply db/schema/006_embeddings_gemini_768.sql in Supabase SQL Editor
- *     (purges stale chunks, parks affected materials as FAILED).
+ * Safe migration path — never mixes old-model vectors with Gemini 2 vectors:
+ *  1. Apply db/schema/012_embeddings_gemini2_768.sql in Supabase SQL Editor
+ *     (or `npm run migrate`) — purges stale chunks (gemini-embedding-001 and
+ *     older), parks affected materials as FAILED.
  *  2. Run: npx tsx scripts/reindex-gemini-embeddings.ts [--dry-run] [--limit N]
- *     — resets FAILED materials with a Gemini-migration message back to QUEUED
- *     and reprocesses each via processMaterial() (same Gemini model/config as
- *     queries). Chunk IDs are regenerated; chunk metadata (filename,
- *     page_number, chunk_index) and PDFs in Storage are preserved.
- *  3. New uploads automatically use Gemini — no further action.
+ *     — resets FAILED materials parked by the embedding migration back to
+ *     QUEUED and reprocesses each via processMaterial() (same Gemini 2
+ *     model/config + instruction prefixes as queries: chunks stored as
+ *     `title: {filename} | text: ...`). Chunk IDs are regenerated; chunk
+ *     metadata (filename, page_number, chunk_index) and PDFs in Storage are
+ *     preserved.
+ *  3. New uploads automatically use Gemini 2 — no further action.
+ *
+ * Safety properties:
+ *  - Matches BOTH the 001 marker ('gemini-embedding-001') and the 2 marker
+ *    ('gemini-embedding-2'), so partially migrated estates converge.
+ *  - Repeatable: re-running only picks up still-FAILED parked rows.
+ *  - No duplicates: processMaterial() deletes a material's stale chunks
+ *    before inserting fresh ones, and the claim guard makes concurrent
+ *    workers a safe no-op.
+ *  - Materials stuck in PROCESSING (crashed worker) are NOT auto-claimed —
+ *    use Retry in the UI for those (it resets to QUEUED first).
  *
  * Requires: GEMINI_API_KEY + SUPABASE_SERVICE_ROLE_KEY in .env.local
  */
@@ -24,7 +37,10 @@ import { getActiveEmbeddingInfo } from "../lib/ai/AIService";
 // so GEMINI_API_KEY + SUPABASE keys resolve when run via `npx tsx ...`.
 loadEnvConfig(process.cwd());
 
-const MIGRATION_MARKER = "gemini-embedding-001";
+const EXPECTED_MODEL = "gemini-embedding-2";
+// Markers parked by the 006 (Embedding 1) and 012 (Embedding 2) migrations.
+// Matching both lets one script converge estates migrated at either step.
+const MIGRATION_MARKERS = ["gemini-embedding-001", "gemini-embedding-2"];
 
 async function main() {
   const args = process.argv.slice(2);
@@ -38,22 +54,24 @@ async function main() {
   }
   const info = getActiveEmbeddingInfo();
   console.log(`Embedding: ${info.provider} ${info.model} (${info.dimension}d)`);
-  if (info.provider !== "gemini" || info.dimension !== 768) {
-    console.error(`Unexpected embedding config — expected gemini/${MIGRATION_MARKER}/768. Check GEMINI_* env.`);
+  if (info.provider !== "gemini" || info.model !== EXPECTED_MODEL || info.dimension !== 768) {
+    console.error(`Unexpected embedding config — expected gemini/${EXPECTED_MODEL}/768. Check GEMINI_* env.`);
     process.exit(1);
   }
 
   const db = getServiceDb();
+  // Supabase .or() with ilike: match either migration marker.
+  const orFilter = MIGRATION_MARKERS.map((m) => `processing_error.ilike.%${m}%`).join(",");
   const { data, error } = await db
     .from("materials")
     .select("id, filename, status, processing_error")
     .eq("status", "FAILED")
-    .ilike("processing_error", `%${MIGRATION_MARKER}%`)
+    .or(orFilter)
     .order("created_at", { ascending: true })
     .limit(Number.isFinite(limit) ? (limit as number) : 1000);
   if (error) throw new Error(`Failed to list materials: ${error.message}`);
   const rows = (data ?? []) as Array<{ id: string; filename: string; status: string; processing_error: string | null }>;
-  console.log(`Found ${rows.length} FAILED material(s) pending Gemini re-index${dryRun ? " (dry-run)" : ""}.`);
+  console.log(`Found ${rows.length} FAILED material(s) pending Gemini 2 re-index${dryRun ? " (dry-run)" : ""}.`);
   for (const r of rows) console.log(`  - ${r.id} ${r.filename}`);
 
   if (dryRun) return;

@@ -36,8 +36,8 @@ the closed learning loop.
     | `MERCURY_API_KEY` | Mercury (Inception Labs) for chat / structured output / evaluation (model `mercury-2.5`) |
     | `MERCURY_API_BASE_URL` | Optional, defaults to `https://api.inceptionlabs.ai/v1` |
     | `MERCURY_CHAT_MODEL` | Optional, defaults to `mercury-2.5` |
-    | `GEMINI_API_KEY` | Google Gemini Embeddings API key (server-only, never client) — free tier at https://aistudio.google.com/apikey. `chunks.embedding` is `VECTOR(768)` per `db/schema/006_embeddings_gemini_768.sql`. |
-    | `GEMINI_EMBEDDING_MODEL` | Optional, defaults to `gemini-embedding-001` |
+    | `GEMINI_API_KEY` | Google Gemini Embeddings API key (server-only, never client) — free tier at https://aistudio.google.com/apikey. `chunks.embedding` is `VECTOR(768)` per `db/schema/012_embeddings_gemini2_768.sql`. |
+    | `GEMINI_EMBEDDING_MODEL` | Optional, defaults to `gemini-embedding-2` |
     | `GEMINI_EMBEDDING_DIM` | Optional, defaults to `768` (must match `chunks.embedding`) |
     | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Inngest background jobs (material processing, mastery, recommendations) |
     | `INNGEST_DEV` | Set `=1` for local dev so missing Inngest keys fall back to direct processing instead of timing out |
@@ -48,7 +48,8 @@ the closed learning loop.
    then `003_storage.sql`, then `004_embeddings_384.sql`, then
    `005_conversation_summary.sql`, then `006_embeddings_gemini_768.sql`,
    then `007_practice.sql`, `008_practice_mcq.sql`,
-   `009_practice_sections.sql`, `010_material_dedup.sql`
+   `009_practice_sections.sql`, `010_material_dedup.sql`,
+   `011_material_file_size.sql`, then `012_embeddings_gemini2_768.sql`
    in order via `npm run migrate` (recommended) or the
    Supabase SQL Editor, ensuring the `materials` Storage bucket exists (private).
 
@@ -65,7 +66,7 @@ the closed learning loop.
 ## How to run tests
 
 ```bash
-npm test        # vitest — 158 unit/integration tests across 10 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile)
+npm test        # vitest — 270 unit/integration tests across 21 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile, gemini-embedding-2 formatting, migration ordering)
 npm run eval    # tsx tests/eval/run-eval.ts — 18 evaluation fixtures, writes tests/eval/results.json + evaluation-results.json + per-run history in tests/eval/history/
 npm run build   # production Next.js build (must compile clean)
 npm run lint    # ESLint (must report no warnings)
@@ -97,7 +98,7 @@ private `materials` bucket). Retrieval is pgvector `match_chunks` scoped by
 `project_id` with `RELEVANCE_THRESHOLD=0.25`. Runtime AI goes through
 `lib/ai/AIService.ts`: chat/structured/evaluation use Mercury `mercury-2.5`;
  embeddings use Google
-Gemini `gemini-embedding-001` (768 dims, `chunks.embedding VECTOR(768)`).
+Gemini `gemini-embedding-2` (768 dims, `chunks.embedding VECTOR(768)`).
 
 ## Embedding-service setup
 
@@ -108,8 +109,9 @@ Embeddings use Google Gemini (Free Tier eligible) — no Docker needed:
 GEMINI_API_KEY=your-key-from-https://aistudio.google.com/apikey
 ```
 
-Apply `db/schema/006_embeddings_gemini_768.sql` so `chunks.embedding` stays
-`VECTOR(768)`. Old bge-small (384d) / nomic (768d) rows are purged by the
+Apply `db/schema/012_embeddings_gemini2_768.sql` so `chunks.embedding` stays
+`VECTOR(768)` in the Gemini 2 embedding space. Old gemini-embedding-001
+(768d) / bge-small (384d) / nomic (768d) rows are purged by the
 migration — press Retry on FAILED materials or run
 `npx tsx scripts/reindex-gemini-embeddings.ts` to re-embed.
 
@@ -135,7 +137,7 @@ Cloud, then smoke-test the full loop on the live URL (signup → space/project
 Production hardening already shipped (see `git log`): inline material
 processing fallback + `maxDuration=60` so Vercel serverless never leaves
 materials stuck in QUEUED when Inngest delivery fails, retry always
-processes inline, Gemini 768-d embeddings with purge + reindex.
+processes inline, Gemini 2 768-d embeddings with purge + reindex.
 
 ## Known limitations
 

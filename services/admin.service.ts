@@ -904,7 +904,7 @@ function checkChatConfig(): HealthCheck {
 }
 
 async function checkEmbeddings(): Promise<HealthCheck> {
-  const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+  const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-2";
   const dim = process.env.GEMINI_EMBEDDING_DIM || "768";
   if (!process.env.GEMINI_API_KEY) {
     return { key: "embeddings", label: "Embeddings", status: "not_configured", detail: "GEMINI_API_KEY is not set. Retrieval will fail — set it in .env.local (see .env.example)." };
@@ -1015,7 +1015,7 @@ export async function getAdminSystemHealth(): Promise<AdminSystemHealth> {
     chatProvider,
     chatModel,
     embeddingProvider,
-    embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
+    embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-2",
     checks,
     aiFailureCount24h,
     materialFailedCount24h,

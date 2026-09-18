@@ -279,7 +279,7 @@ export default function MaterialsClient({
       )}
 
       <p className="text-xs text-stone-400">
-        Background pipeline: upload → PROCESSING → extract → chunk → embed (Gemini gemini-embedding-001, 768) → concepts (Mercury) → READY. Failures land in FAILED with retry/delete actions.
+        Background pipeline: upload → PROCESSING → extract → chunk → embed (Gemini gemini-embedding-2, 768) → concepts (Mercury) → READY. Failures land in FAILED with retry/delete actions.
       </p>
     </div>
   );

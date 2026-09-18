@@ -516,9 +516,13 @@ export async function processMaterial(materialId: string) {
     // Prompt window for concept extraction (same 8000-char budget either way).
     const conceptSourceText = ocrSegments ? joinSegmentsForPrompt(ocrSegments) : text.slice(0, 8000);
 
-    // 4. Embed each chunk via AIService (Gemini — same model/config as queries) — each call logs EMBEDDING per phase 15
+    // 4. Embed each chunk via AIService (Gemini 2 — same model/config as
+    // queries: chunks stored as `title: {filename} | text: ...`, queries as
+    // `task: search result | query: ...`) — each call logs EMBEDDING per phase 15
     const contents = chunks.map((c) => c.content);
-    // Gemini embedContent supports batching; send in batches of 20 to avoid payload/rate limits
+    // Gemini embedContent supports batching; send in batches of 20 to avoid payload/rate limits.
+    // (gemini-embedding-2 needs one Content object per input inside the batch —
+    // handled in AIService — otherwise the batch collapses to one vector.)
     const batchSize = 20;
     const embeddings: number[][] = [];
     for (let i = 0; i < contents.length; i += batchSize) {
@@ -526,7 +530,11 @@ export async function processMaterial(materialId: string) {
       const requestId = crypto.randomUUID();
       const t0 = Date.now();
       try {
-        const { vectors: embs, usage } = await aiService.generateEmbeddingWithUsage({ input: batch });
+        const { vectors: embs, usage } = await aiService.generateEmbeddingWithUsage({
+          input: batch,
+          purpose: "document",
+          title: material.filename as string,
+        });
         const latencyMs = Date.now() - t0;
         await logAiOperation({
           userId,
@@ -560,12 +568,12 @@ export async function processMaterial(materialId: string) {
     }
     if (embeddings.length !== chunks.length) throw new Error("Embedding count mismatch");
 
-    // Verify dimension matches schema (Gemini 768; AIService already
+    // Verify dimension matches schema (Gemini 2, 768; AIService already
     // throws on mismatch — this is a second, explicit gate before insert).
     if (embeddings[0]?.length !== EMBEDDING_DIM) {
       throw new Error(
         `Embedding dimension ${embeddings[0]?.length} does not match schema (${EMBEDDING_DIM}). ` +
-          `Run db/schema/006_embeddings_gemini_768.sql and use one embedding model at a time.`
+          `Run db/schema/012_embeddings_gemini2_768.sql and use one embedding model at a time.`
       );
     }
 

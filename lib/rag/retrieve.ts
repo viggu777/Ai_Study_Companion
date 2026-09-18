@@ -14,9 +14,12 @@ import { logAiOperation } from "@/lib/ai/observability";
  * Cosine similarity threshold for relevance.
  * Chunks below this similarity are considered not relevant.
  * Named constant per spec — not an inline magic number.
- * Kept at 0.25 after the Gemini migration (gemini-embedding-001, 768d):
+ * Kept at 0.25 after the Gemini 2 migration (gemini-embedding-2, 768d):
  * conservative enough to avoid false negatives while still filtering
- * truly irrelevant queries. Same threshold as the previous bge-small setup.
+ * truly irrelevant queries. Same threshold as the previous Gemini 1 setup.
+ * (Live probe: Gemini-2 similarities run hot — ~0.75 relevant vs ~0.54
+ * unrelated on a smoke pair — so this threshold is permissive by design;
+ * retune only with eval data, not ad hoc.)
  */
 export const RELEVANCE_THRESHOLD = 0.25;
 
@@ -168,8 +171,9 @@ export function balanceChunks(
 /**
  * Project-scoped retrieval.
  * - Validates project ownership (WHERE id = projectId AND user_id = userId)
- * - Embeds query via AIService (Gemini gemini-embedding-001, 768 dims — same
- *   model/config as document chunks)
+ * - Embeds query via AIService (Gemini gemini-embedding-2, 768 dims, formatted
+ *   as `task: search result | query:` — the matching pair to how document
+ *   chunks are stored as `title: ... | text: ...`)
  * - Runs pgvector cosine similarity search filtered by project_id
  * - Balances chunks across materials (round-robin) + boosts a user-named file
  * - Returns top-K above threshold, or insufficient_evidence if none qualify
@@ -210,7 +214,7 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
       const cached = getCachedQueryEmbedding(query.trim());
       const { vectors: embeddings, usage } = cached
         ? { vectors: [cached], usage: { inputTokens: 0, outputTokens: 0 } }
-        : await aiService.generateEmbeddingWithUsage({ input: query.trim() });
+        : await aiService.generateEmbeddingWithUsage({ input: query.trim(), purpose: "query" });
       const latencyMs = Date.now() - t0;
       queryEmbedding = embeddings[0];
       if (!cached) setCachedQueryEmbedding(query.trim(), queryEmbedding);

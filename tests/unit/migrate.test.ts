@@ -15,6 +15,7 @@ describe("migration runner helpers", () => {
     const shuffled = [
       path.join(ROOT, "db/schema/007_practice.sql"),
       path.join(ROOT, "db/schema/001_initial_schema.sql"),
+      path.join(ROOT, "db/schema/012_embeddings_gemini2_768.sql"),
       path.join(ROOT, "db/schema/006_embeddings_gemini_768.sql"),
       path.join(ROOT, "db/schema/002_retrieve.sql"),
     ];
@@ -24,6 +25,7 @@ describe("migration runner helpers", () => {
       "002_retrieve.sql",
       "006_embeddings_gemini_768.sql",
       "007_practice.sql",
+      "012_embeddings_gemini2_768.sql",
     ]);
   });
 
@@ -39,6 +41,12 @@ describe("migration runner helpers", () => {
     const files = fs.readdirSync(path.join(ROOT, "db/schema")).filter((f) => f.endsWith(".sql"));
     expect(files).toContain("001_initial_schema.sql");
     expect(files).toContain("007_practice.sql");
+    expect(files).toContain("012_embeddings_gemini2_768.sql");
+    // The Gemini 2 migration must sort after the Gemini 1 migration.
+    const sorted = [...files].sort((a, b) => a.localeCompare(b));
+    expect(sorted.indexOf("012_embeddings_gemini2_768.sql")).toBeGreaterThan(
+      sorted.indexOf("006_embeddings_gemini_768.sql")
+    );
     // Runner + package script exist (the automated path the UI points at).
     expect(fs.existsSync(path.join(ROOT, "scripts/migrate.mjs"))).toBe(true);
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {

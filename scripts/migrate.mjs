@@ -123,29 +123,87 @@ async function chunksVectorDim(client) {
 }
 
 /**
+ * Evidence that the Gemini 2 migration (012) already ran on a manually-built
+ * DB: EMBEDDING logs written with the gemini-embedding-2 model, or materials
+ * parked with the 012 FAILED marker. Without evidence, 012 stays pending so
+ * stale gemini-embedding-001 vectors are purged (correct — the two models use
+ * incompatible embedding spaces even though both are 768d).
+ */
+async function hasGemini2Evidence(client) {
+  try {
+    const { rows } = await client.query(
+      `SELECT EXISTS(SELECT 1 FROM ai_operations WHERE feature='EMBEDDING' AND model LIKE '%gemini-embedding-2%') AS ok`
+    );
+    if (rows[0]?.ok === true) return true;
+  } catch {
+    // ai_operations missing — treat as no evidence
+  }
+  try {
+    const { rows } = await client.query(
+      `SELECT EXISTS(SELECT 1 FROM materials WHERE processing_error ILIKE '%gemini-embedding-2%') AS ok`
+    );
+    if (rows[0]?.ok === true) return true;
+  } catch {
+    // materials missing — caller already verified spaces exists, so ignore
+  }
+  return false;
+}
+
+/**
  * Detect the state of a manually-built DB (no schema_migrations yet) and
  * return the versions to baseline-mark as already applied. Returns null when
  * the DB is fresh (apply everything) or too old to baseline safely.
+ *
+ * Built explicitly per feature (never "all except X") so newly added
+ * migrations default to pending instead of being silently skipped.
  */
 export async function detectBaseline(client, files) {
   const versions = files.map(migrationVersion);
+  const has = (v) => versions.includes(v);
   if (!(await tableExists(client, "spaces"))) return null; // fresh DB
-  if (await tableExists(client, "practice_assignments")) {
-    // Practice exists — check how far its columns got.
-    if (!(await columnExists(client, "practice_questions", "question_type"))) {
-      return versions.filter((v) => v !== "008_practice_mcq.sql" && v !== "009_practice_sections.sql"); // at 007
-    }
-    if (!(await columnExists(client, "practice_questions", "acceptable_answers"))) {
-      return versions.filter((v) => v !== "009_practice_sections.sql"); // at 008, 009 pending
-    }
-    return versions; // at/after 009
-  }
+  const applied = [];
+  const push = (v) => {
+    if (has(v) && !applied.includes(v)) applied.push(v);
+  };
+  // 001–006 core: Gemini-1-shaped DB (768d vectors + conversation summary).
   const dim = await chunksVectorDim(client);
   const hasSummary = await columnExists(client, "conversations", "summary");
-  if (hasSummary && dim === 768) {
-    return versions.filter((v) => v !== "007_practice.sql"); // at 006, 007 pending
+  if (!(hasSummary && dim === 768)) {
+    return "TOO_OLD";
   }
-  return "TOO_OLD";
+  for (const v of [
+    "001_initial_schema.sql",
+    "002_retrieve.sql",
+    "003_storage.sql",
+    "004_embeddings_384.sql",
+    "005_conversation_summary.sql",
+    "006_embeddings_gemini_768.sql",
+  ]) {
+    push(v);
+  }
+  // 007–009 practice chain (each gated on the column the next migration adds).
+  if (await tableExists(client, "practice_assignments")) {
+    push("007_practice.sql");
+    if (!(await columnExists(client, "practice_questions", "question_type"))) {
+      return applied; // at 007: 008+ pending
+    }
+    push("008_practice_mcq.sql");
+    if (!(await columnExists(client, "practice_questions", "acceptable_answers"))) {
+      return applied; // at 008: 009+ pending
+    }
+    push("009_practice_sections.sql");
+  }
+  // 010–011 material columns (independent of the practice chain).
+  if (await columnExists(client, "materials", "file_hash")) push("010_material_dedup.sql");
+  if (await columnExists(client, "materials", "file_size")) push("011_material_file_size.sql");
+  // 012 Gemini 2: same VECTOR(768) size, new embedding space — only baseline
+  // when there is positive evidence it already ran (see hasGemini2Evidence).
+  if (has("012_embeddings_gemini2_768.sql") && (await hasGemini2Evidence(client))) {
+    push("012_embeddings_gemini2_768.sql");
+  }
+  // 013 conversation pinning (independent additive column).
+  if (await columnExists(client, "conversations", "is_pinned")) push("013_conversation_pinning.sql");
+  return applied;
 }
 
 async function applyFile(client, file) {
