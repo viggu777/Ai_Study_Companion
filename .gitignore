@@ -11,3 +11,6 @@ evaluation-results.json
 tests/eval/results.json
 tests/eval/history/
 .vercel
+# Tesseract OCR language data (downloaded at runtime to /tmp on Vercel;
+# never commit — local test runs may drop *.traineddata in cwd)
+*.traineddata
