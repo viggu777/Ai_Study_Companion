@@ -16,6 +16,7 @@ export async function GET(
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
+    if (msg.includes("007_practice")) return NextResponse.json({ error: msg }, { status: 503 });
     return NextResponse.json({ error: msg || "Failed to list practice assignments" }, { status: 500 });
   }
 }
@@ -40,6 +41,7 @@ export async function POST(
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     if (msg.includes("No concepts")) return NextResponse.json({ error: msg }, { status: 400 });
+    if (msg.includes("007_practice")) return NextResponse.json({ error: msg }, { status: 503 });
     console.error("Practice generation failed:", e);
     return NextResponse.json({ error: msg || "Practice generation failed" }, { status: 500 });
   }

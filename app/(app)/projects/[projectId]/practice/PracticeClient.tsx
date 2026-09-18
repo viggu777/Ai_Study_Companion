@@ -4,6 +4,12 @@ import { useEffect, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { PracticeIcon, ArrowRightIcon } from "@/components/icons";
+import {
+  PRACTICE_DEFAULT_COUNT,
+  PRACTICE_MAX_COUNT,
+  PRACTICE_MIN_COUNT,
+  clampPracticeCount,
+} from "@/ai/practice";
 
 interface AssignmentListItem {
   id: string;
@@ -107,6 +113,8 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
   const [fetching, setFetching] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [practiceCount, setPracticeCount] = useState<number>(PRACTICE_DEFAULT_COUNT);
   const [active, setActive] = useState<ActiveAssignment | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answerText, setAnswerText] = useState("");
@@ -122,11 +130,13 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
   const fetchAssignments = async () => {
     try {
       const res = await fetch(`/api/projects/${projectId}/practice`);
-      if (!res.ok) throw new Error("Failed to fetch practice assignments");
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Failed to fetch practice assignments");
       setAssignments(data.assignments ?? []);
+      setListError(null);
     } catch (e) {
       console.error(e);
+      setListError(e instanceof Error ? e.message : String(e));
     } finally {
       setFetching(false);
     }
@@ -144,7 +154,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/practice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 5 }),
+        body: JSON.stringify({ count: clampPracticeCount(practiceCount) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate practice assignment");
@@ -675,13 +685,36 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold tracking-tight text-stone-900">Deep practice</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
-              5 open-ended questions per assignment, chosen from weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites — never multiple-choice.
+              Open-ended questions per assignment, chosen from weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites — never multiple-choice.
             </p>
             <div className="mt-3 rounded-xl bg-stone-50 px-3.5 py-2.5 text-xs leading-relaxed text-stone-500 ring-1 ring-inset ring-stone-200">
               <span className="font-semibold text-stone-700">Quiz = fast assessment.</span> Get the answer right.{" "}
               <span className="font-semibold text-stone-700">Practice = deep learning.</span> Show what you actually understand — explain, reason, apply, compare, solve, teach back.
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
+                <button
+                  type="button"
+                  onClick={() => setPracticeCount((c) => clampPracticeCount(c - 1))}
+                  disabled={generating || practiceCount <= PRACTICE_MIN_COUNT}
+                  aria-label="Fewer questions"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  −
+                </button>
+                <span className="tnum min-w-16 text-center text-sm font-semibold text-stone-900" aria-live="polite">
+                  {practiceCount} {practiceCount === 1 ? "question" : "questions"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPracticeCount((c) => clampPracticeCount(c + 1))}
+                  disabled={generating || practiceCount >= PRACTICE_MAX_COUNT}
+                  aria-label="More questions"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
               <Button onClick={startAssignment} disabled={generating}>
                 {generating && <Spinner className="text-white" />}
                 {generating ? "Building your assignment…" : "Start practice"}
@@ -691,6 +724,11 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               </LinkButton>
             </div>
             {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
+            {error?.includes("007_practice") && (
+              <p className="mt-2 rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
+                Setup needed: run <span className="font-mono">db/schema/007_practice.sql</span> in the Supabase SQL Editor (after 006), then try again.
+              </p>
+            )}
             {generating && <p className="mt-2 text-xs text-stone-400">Analyzing mastery + misconceptions + selecting intents…</p>}
           </div>
         </div>
@@ -708,6 +746,19 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             <div className="skeleton h-12 w-full" />
             <div className="skeleton h-12 w-full" />
             <div className="skeleton h-12 w-2/3" />
+          </div>
+        ) : listError ? (
+          <div className="p-8 text-center">
+            <p className="text-sm font-medium text-stone-900">Couldn&apos;t load practice</p>
+            <p className="mx-auto mt-1 max-w-md text-sm text-stone-500">{listError}</p>
+            {listError.includes("007_practice") && (
+              <p className="mx-auto mt-2 max-w-md rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
+                Setup needed: run <span className="font-mono">db/schema/007_practice.sql</span> in the Supabase SQL Editor (after 006), then press Refresh.
+              </p>
+            )}
+            <button onClick={fetchAssignments} className="mt-4 text-xs font-medium text-stone-500 transition-colors hover:text-stone-900">
+              Retry
+            </button>
           </div>
         ) : assignments.length === 0 ? (
           <div className="p-8 text-center">

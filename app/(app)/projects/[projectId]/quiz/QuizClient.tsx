@@ -4,6 +4,12 @@ import { useEffect, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { QuizIcon, ArrowRightIcon } from "@/components/icons";
+import {
+  QUIZ_DEFAULT_COUNT,
+  QUIZ_MAX_COUNT,
+  QUIZ_MIN_COUNT,
+  clampQuizCount,
+} from "@/ai/quiz";
 
 interface QuizListItem {
   id: string;
@@ -77,6 +83,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
   const [fetching, setFetching] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [quizCount, setQuizCount] = useState<number>(QUIZ_DEFAULT_COUNT);
   const [activeQuiz, setActiveQuiz] = useState<ActiveQuiz | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string>("");
@@ -111,7 +118,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/quiz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 10 }),
+        body: JSON.stringify({ count: clampQuizCount(quizCount) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate quiz");
@@ -573,9 +580,32 @@ export default function QuizClient({ projectId }: { projectId: string }) {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold tracking-tight text-stone-900">Adaptive quiz</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
-              10 questions per round, picked from your weakest concepts and recent mistakes. Difficulty adapts to your mastery — answer well and it gets harder.
+              Questions per round, picked from your weakest concepts and recent mistakes. Difficulty adapts to your mastery — answer well and it gets harder.
             </p>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
+                <button
+                  type="button"
+                  onClick={() => setQuizCount((c) => clampQuizCount(c - 1))}
+                  disabled={generating || quizCount <= QUIZ_MIN_COUNT}
+                  aria-label="Fewer questions"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  −
+                </button>
+                <span className="tnum min-w-16 text-center text-sm font-semibold text-stone-900" aria-live="polite">
+                  {quizCount} {quizCount === 1 ? "question" : "questions"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setQuizCount((c) => clampQuizCount(c + 1))}
+                  disabled={generating || quizCount >= QUIZ_MAX_COUNT}
+                  aria-label="More questions"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  +
+                </button>
+              </div>
               <Button onClick={startQuiz} disabled={generating}>
                 {generating && <Spinner className="text-white" />}
                 {generating ? "Building your quiz…" : "Start quiz"}

@@ -27,6 +27,17 @@ export type PracticeIntent =
   | "PROBLEM_SOLVING"
   | "TEACH_BACK";
 
+/** Assignment size bounds — single source of truth for service + UI stepper. */
+export const PRACTICE_MIN_COUNT = 1;
+export const PRACTICE_MAX_COUNT = 8;
+export const PRACTICE_DEFAULT_COUNT = 5;
+
+/** Clamp a user-requested question count into [MIN, MAX]. Pure — unit-tested. */
+export function clampPracticeCount(count?: number): number {
+  const n = typeof count === "number" && Number.isFinite(count) ? Math.floor(count) : PRACTICE_DEFAULT_COUNT;
+  return Math.max(PRACTICE_MIN_COUNT, Math.min(PRACTICE_MAX_COUNT, n));
+}
+
 export const PRACTICE_INTENTS: PracticeIntent[] = [
   "EXPLAIN",
   "WHY",

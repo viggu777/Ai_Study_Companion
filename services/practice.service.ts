@@ -4,13 +4,16 @@ import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import { inngest } from "@/lib/jobs/client";
 import {
+  PRACTICE_DEFAULT_COUNT,
   PRACTICE_EVALUATION_SYSTEM_PROMPT,
   PRACTICE_GENERATION_SYSTEM_PROMPT,
+  PRACTICE_MAX_COUNT,
   PracticeEvaluationSchema,
   PracticeGenerationSchema,
   buildPracticeEvaluationUserPrompt,
   buildPracticeGenerationUserPrompt,
   calibrateConfidence,
+  clampPracticeCount,
   validatePracticeEvaluationOutput,
   validatePracticeGenerationOutput,
   type PracticeDifficulty,
@@ -19,8 +22,44 @@ import {
 } from "@/ai/practice";
 import { computeNewMastery } from "@/services/mastery.service";
 
-export const DEFAULT_PRACTICE_SIZE = 5;
-export const MAX_PRACTICE_SIZE = 8;
+export const DEFAULT_PRACTICE_SIZE = PRACTICE_DEFAULT_COUNT;
+export const MAX_PRACTICE_SIZE = PRACTICE_MAX_COUNT;
+
+/** Returned when db/schema/007_practice.sql was never applied — actionable, not a bare 500. */
+export const PRACTICE_SETUP_MESSAGE =
+  "Practice tables are missing — run db/schema/007_practice.sql in the Supabase SQL Editor (after 006), then retry.";
+
+/**
+ * Detect missing-table errors across shapes: thrown Errors, PostgREST error
+ * objects ({ message, code: PGRST205 }), and raw Postgres 42P01. PostgREST
+ * "table not in schema cache" errors do NOT throw — they arrive as
+ * `{ data: null, error }` — so callers must pass the `error` object itself.
+ * Pure — unit-tested.
+ */
+export function isMissingTableError(e: unknown, table?: string): boolean {
+  const obj = (typeof e === "object" && e !== null ? e : {}) as {
+    message?: unknown;
+    code?: unknown;
+    details?: unknown;
+    hint?: unknown;
+  };
+  const code = typeof obj.code === "string" ? obj.code : "";
+  if (code === "42P01" || code === "PGRST205") return true;
+  if (e instanceof Error && table && e.message.toLowerCase().includes(table.toLowerCase())) return true;
+  const text = [obj.message, obj.details, obj.hint, typeof e === "string" ? e : ""]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return false;
+  if (text.includes("schema cache") || text.includes("could not find the table")) return true;
+  if (text.includes("does not exist") && (!table || text.includes(table.toLowerCase()))) return true;
+  return false;
+}
+
+/** Throw the actionable setup error when a practice-table read/write hit a missing table. */
+export function throwIfPracticeTablesMissing(err: unknown, table?: string): void {
+  if (err && isMissingTableError(err, table)) throw new Error(PRACTICE_SETUP_MESSAGE);
+}
 
 /* Selection weights — deliberately multi-signal (NOT wrong->easy). */
 export const PRACTICE_SCORE = {
@@ -195,12 +234,29 @@ async function buildPracticeConceptStats(
   prerequisiteForWeak: Set<string>;
 }> {
   const conceptIds = concepts.map((c) => c.id);
-  const [masteryRes, trendRes, misconRes, edgesRes] = await Promise.all([
+  // Required tables (pre-007 schema) fail loudly; practice-only tables
+  // (007 migration) degrade to empty so selection still works when the
+  // migration hasn't been applied yet.
+  const [masteryRes, trendRes] = await Promise.all([
     db.from("concept_mastery").select("concept_id, mastery_score").eq("project_id", projectId).eq("user_id", userId).in("concept_id", conceptIds),
     db.from("mastery_history").select("concept_id, previous_score, new_score").eq("user_id", userId).in("concept_id", conceptIds).order("created_at", { ascending: false }).limit(Math.min(500, Math.max(20, conceptIds.length * 4))),
-    db.from("misconceptions").select("concept_id, occurrence_count").eq("project_id", projectId).eq("user_id", userId).eq("status", "ACTIVE").in("concept_id", conceptIds),
-    db.from("concept_edges").select("from_concept_id, to_concept_id, relation").eq("project_id", projectId).limit(300),
   ]);
+  let misconRes: { data: unknown } = { data: [] };
+  let edgesRes: { data: unknown } = { data: [] };
+  try {
+    const r = await db.from("misconceptions").select("concept_id, occurrence_count").eq("project_id", projectId).eq("user_id", userId).eq("status", "ACTIVE").in("concept_id", conceptIds);
+    misconRes = (r as { error?: unknown }).error ? { data: [] } : r;
+  } catch (e) {
+    if (!isMissingTableError(e, "misconceptions")) console.warn("practice stats misconceptions fallback:", e instanceof Error ? e.message : String(e));
+    misconRes = { data: [] };
+  }
+  try {
+    const r = await db.from("concept_edges").select("from_concept_id, to_concept_id, relation").eq("project_id", projectId).limit(300);
+    edgesRes = (r as { error?: unknown }).error ? { data: [] } : r;
+  } catch (e) {
+    if (!isMissingTableError(e, "concept_edges")) console.warn("practice stats edges fallback:", e instanceof Error ? e.message : String(e));
+    edgesRes = { data: [] };
+  }
 
   const masteryByConcept = new Map<string, number>();
   for (const r of ((masteryRes.data ?? []) as Array<{ concept_id: string; mastery_score: number | string }>)) {
@@ -468,7 +524,7 @@ export async function generatePracticeAssignment(
   const spaceId = (project as { space_id: string }).space_id;
   const projectName = (project as { name: string }).name;
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
-  const count = Math.max(1, Math.min(options?.count ?? DEFAULT_PRACTICE_SIZE, MAX_PRACTICE_SIZE));
+  const count = clampPracticeCount(options?.count);
 
   // Idempotency: recent assignment with zero responses is reused (double-click guard).
   try {
@@ -631,7 +687,10 @@ export async function generatePracticeAssignment(
     .insert({ project_id: projectId, user_id: userId, status: "in_progress", target_count: validated!.questions.length, focus_summary: focusSummary, selection_context: selectionContext })
     .select("id, project_id, status, created_at, focus_summary")
     .single();
-  if (aErr || !assignment) throw new Error("Failed to create practice assignment");
+  if (aErr || !assignment) {
+    throwIfPracticeTablesMissing(aErr, "practice_assignments");
+    throw new Error("Failed to create practice assignment");
+  }
   const assignmentId = (assignment as { id: string }).id;
 
   const nameById = new Map(selected.map((s) => [s.id, s.name]));
@@ -648,7 +707,16 @@ export async function generatePracticeAssignment(
     selection_reason: q.selection_reason,
   }));
   const { data: inserted, error: qErr } = await db.from("practice_questions").insert(rowsToInsert).select("id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question, selection_reason");
-  if (qErr) throw new Error("Failed to persist practice questions");
+  if (qErr || !inserted) {
+    throwIfPracticeTablesMissing(qErr, "practice_questions");
+    // Assignment row without questions is useless — remove it so retries start clean.
+    try {
+      await db.from("practice_assignments").delete().eq("id", assignmentId);
+    } catch {
+      // best-effort cleanup
+    }
+    throw new Error("Failed to persist practice questions");
+  }
 
   // Validated edge proposals — conservative upsert (single evidence, untrusted until repeated).
   try {
@@ -717,7 +785,7 @@ export async function listPracticeAssignments(projectId: string) {
     .order("created_at", { ascending: false })
     .limit(20);
   if (error) {
-    if (error.message.includes("practice_assignments") || error.code === "42P01") return [];
+    if (isMissingTableError(error, "practice_assignments")) return [];
     throw new Error(error.message);
   }
   return data ?? [];
@@ -735,7 +803,10 @@ export async function getPracticeAssignmentWithQuestions(projectId: string, assi
     .eq("project_id", projectId)
     .eq("user_id", userId)
     .single();
-  if (aErr || !assignment) throw new Error("Practice assignment not found");
+  if (aErr || !assignment) {
+    throwIfPracticeTablesMissing(aErr, "practice_assignments");
+    throw new Error("Practice assignment not found");
+  }
   const { data: questions, error: qErr } = await db
     .from("practice_questions")
     .select("id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question, selection_reason")
@@ -842,7 +913,10 @@ export async function submitPracticeResponse(
     .eq("project_id", projectId)
     .eq("user_id", userId)
     .single();
-  if (aErr || !assignment) throw new Error("Practice assignment not found");
+  if (aErr || !assignment) {
+    throwIfPracticeTablesMissing(aErr, "practice_assignments");
+    throw new Error("Practice assignment not found");
+  }
 
   const { data: question, error: qErr } = await db
     .from("practice_questions")
@@ -850,7 +924,10 @@ export async function submitPracticeResponse(
     .eq("id", questionId)
     .eq("assignment_id", assignmentId)
     .single();
-  if (qErr || !question) throw new Error("Practice question not found in this assignment");
+  if (qErr || !question) {
+    throwIfPracticeTablesMissing(qErr, "practice_questions");
+    throw new Error("Practice question not found in this assignment");
+  }
   const qRow = question as {
     id: string; assignment_id: string; concept_id: string; related_concept_ids: string[] | null;
     subconcept_label: string | null; intent: string; difficulty: string; question: string;
@@ -881,6 +958,7 @@ export async function submitPracticeResponse(
       .select("id")
       .single();
     if (pendErr || !pending) {
+      throwIfPracticeTablesMissing(pendErr, "practice_responses");
       const { data: race } = await db.from("practice_responses").select("id, score, evaluation").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
       const raceRow = race as { id: string; score: number | string | null; evaluation: unknown } | null;
       if (raceRow && raceRow.score !== null && raceRow.evaluation != null) {
@@ -1303,7 +1381,10 @@ export async function getPracticeSummary(projectId: string, assignmentId: string
     .eq("project_id", projectId)
     .eq("user_id", userId)
     .single();
-  if (aErr || !assignment) throw new Error("Practice assignment not found");
+  if (aErr || !assignment) {
+    throwIfPracticeTablesMissing(aErr, "practice_assignments");
+    throw new Error("Practice assignment not found");
+  }
   const row = assignment as { summary: PracticeSummary | null; status: string };
   if (row.summary && typeof row.summary === "object" && "understood" in row.summary) return row.summary;
   return buildPracticeSummary(projectId, assignmentId, userId);

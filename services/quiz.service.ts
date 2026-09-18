@@ -4,9 +4,11 @@ import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import { inngest } from "@/lib/jobs/client";
 import {
+  QUIZ_DEFAULT_COUNT,
   QUIZ_SYSTEM_PROMPT,
   QuizGenerationSchema,
   buildQuizUserPrompt,
+  clampQuizCount,
   validateQuizOutput,
   type QuizDifficulty,
   type QuizQuestionType,
@@ -19,7 +21,7 @@ import {
   type AssessmentEvaluation,
 } from "@/ai/assessment";
 
-const DEFAULT_QUIZ_SIZE = 10;
+const DEFAULT_QUIZ_SIZE = QUIZ_DEFAULT_COUNT;
 
 // Weights / thresholds for adaptive selection — combine ≥3 signals
 const SCORE = {
@@ -321,7 +323,7 @@ export async function generateQuiz(
   const projectName = (project as { name: string }).name;
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
 
-  const count = Math.max(1, Math.min(options?.count ?? DEFAULT_QUIZ_SIZE, 10));
+  const count = clampQuizCount(options?.count);
 
   // Idempotency guard against double-click / retry storms: if the user already
   // has a quiz created in the last 2 minutes with zero answers, return it

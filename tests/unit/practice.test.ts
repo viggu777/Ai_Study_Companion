@@ -9,9 +9,14 @@ import {
   normalizeMisconception,
   misconceptionSimilarity,
   calibrateConfidence,
+  clampPracticeCount,
   PRACTICE_GENERATION_SYSTEM_PROMPT,
   PRACTICE_EVALUATION_SYSTEM_PROMPT,
+  PRACTICE_DEFAULT_COUNT,
+  PRACTICE_MAX_COUNT,
+  PRACTICE_MIN_COUNT,
 } from "@/ai/practice";
+import { clampQuizCount, QUIZ_DEFAULT_COUNT, QUIZ_MAX_COUNT, QUIZ_MIN_COUNT } from "@/ai/quiz";
 import {
   computePracticeScore,
   pickPracticeIntent,
@@ -21,6 +26,8 @@ import {
   stripPracticeQuestionForTaking,
   gatePracticeQuestionForReview,
   mapMentionsToConceptIds,
+  isMissingTableError,
+  PRACTICE_SETUP_MESSAGE,
 } from "@/services/practice.service";
 import {
   confidenceForEvidenceCount,
@@ -355,5 +362,79 @@ describe("practice recommendations use learner state + materials", () => {
     expect(prompt).toMatch(/RECURRING MISCONCEPTIONS/);
     expect(prompt).toMatch(/DEPENDENCY NOTES/);
     expect(prompt).toContain("notes.pdf");
+  });
+});
+
+describe("missing-table resilience (007 migration not applied)", () => {
+  it("detects PostgREST schema-cache + Postgres 42P01 shapes", () => {
+    expect(isMissingTableError({ code: "PGRST205", message: "Could not find the table 'public.practice_assignments' in the schema cache" })).toBe(true);
+    expect(isMissingTableError({ code: "42P01", message: 'relation "public.misconceptions" does not exist' })).toBe(true);
+    expect(isMissingTableError(new Error("Could not find the table 'public.concept_edges' in the schema cache"), "concept_edges")).toBe(true);
+    expect(isMissingTableError(new Error("relation \"practice_responses\" does not exist"))).toBe(true);
+  });
+
+  it("does not flag unrelated errors as missing tables", () => {
+    expect(isMissingTableError(new Error("Project not found"))).toBe(false);
+    expect(isMissingTableError(new Error("Failed to fetch"))).toBe(false);
+    expect(isMissingTableError(null)).toBe(false);
+    expect(isMissingTableError(undefined)).toBe(false);
+  });
+
+  it("setup message points at the 007 migration", () => {
+    expect(PRACTICE_SETUP_MESSAGE).toContain("007_practice.sql");
+  });
+
+  it("practice routes map the setup error to 503 (not a bare 500)", () => {
+    const files = [
+      "app/api/projects/[projectId]/practice/route.ts",
+      "app/api/projects/[projectId]/practice/[assignmentId]/route.ts",
+      "app/api/projects/[projectId]/practice/[assignmentId]/submit/route.ts",
+      "app/api/projects/[projectId]/practice/[assignmentId]/summary/route.ts",
+    ];
+    for (const rel of files) {
+      const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+      expect(src, `${rel} 503`).toContain("503");
+      expect(src, `${rel} setup`).toContain("007_practice");
+    }
+  });
+
+  it("sidebar exposes Practice in the project nav", () => {
+    const src = fs.readFileSync(path.join(ROOT, "components/Sidebar.tsx"), "utf8");
+    expect(src).toContain("PracticeIcon");
+    expect(src).toContain("`${base}/practice`");
+  });
+});
+
+describe("manual question counts (quiz + practice steppers)", () => {
+  it("clamps practice counts to 1..8 with default 5", () => {
+    expect(PRACTICE_MIN_COUNT).toBe(1);
+    expect(PRACTICE_MAX_COUNT).toBe(8);
+    expect(PRACTICE_DEFAULT_COUNT).toBe(5);
+    expect(clampPracticeCount(undefined)).toBe(5);
+    expect(clampPracticeCount(0)).toBe(1);
+    expect(clampPracticeCount(3)).toBe(3);
+    expect(clampPracticeCount(99)).toBe(8);
+    expect(clampPracticeCount(4.9)).toBe(4);
+    expect(clampPracticeCount(NaN)).toBe(5);
+  });
+
+  it("clamps quiz counts to 1..10 with default 10", () => {
+    expect(QUIZ_MIN_COUNT).toBe(1);
+    expect(QUIZ_MAX_COUNT).toBe(10);
+    expect(QUIZ_DEFAULT_COUNT).toBe(10);
+    expect(clampQuizCount(undefined)).toBe(10);
+    expect(clampQuizCount(0)).toBe(1);
+    expect(clampQuizCount(7)).toBe(7);
+    expect(clampQuizCount(99)).toBe(10);
+    expect(clampQuizCount(NaN)).toBe(10);
+  });
+
+  it("both clients send the chosen count to their generate endpoints", () => {
+    const quiz = fs.readFileSync(path.join(ROOT, "app/(app)/projects/[projectId]/quiz/QuizClient.tsx"), "utf8");
+    expect(quiz).toContain("clampQuizCount(quizCount)");
+    expect(quiz).toContain("setQuizCount");
+    const practice = fs.readFileSync(path.join(ROOT, "app/(app)/projects/[projectId]/practice/PracticeClient.tsx"), "utf8");
+    expect(practice).toContain("clampPracticeCount(practiceCount)");
+    expect(practice).toContain("setPracticeCount");
   });
 });

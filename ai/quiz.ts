@@ -6,6 +6,17 @@
 export type QuizQuestionType = "MCQ" | "OPEN_ENDED";
 export type QuizDifficulty = "easy" | "medium" | "hard";
 
+/** Quiz size bounds — single source of truth for service + UI stepper. */
+export const QUIZ_MIN_COUNT = 1;
+export const QUIZ_MAX_COUNT = 10;
+export const QUIZ_DEFAULT_COUNT = 10;
+
+/** Clamp a user-requested question count into [MIN, MAX]. Pure — unit-tested. */
+export function clampQuizCount(count?: number): number {
+  const n = typeof count === "number" && Number.isFinite(count) ? Math.floor(count) : QUIZ_DEFAULT_COUNT;
+  return Math.max(QUIZ_MIN_COUNT, Math.min(QUIZ_MAX_COUNT, n));
+}
+
 export interface QuizQuestion {
   concept_id: string;
   type: QuizQuestionType;
