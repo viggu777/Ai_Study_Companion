@@ -350,9 +350,9 @@ export async function processMaterial(materialId: string) {
     const chunks = chunkPlainText(text, numPages);
     if (chunks.length === 0) throw new Error("Chunking produced no chunks");
 
-    // 4. Embed each chunk via AIService (batch where possible) — each call logs EMBEDDING per phase 15
+    // 4. Embed each chunk via AIService (Gemini — same model/config as queries) — each call logs EMBEDDING per phase 15
     const contents = chunks.map((c) => c.content);
-    // Groq nomic model supports batching; send in batches of 20 to avoid payload limits
+    // Gemini embedContent supports batching; send in batches of 20 to avoid payload/rate limits
     const batchSize = 20;
     const embeddings: number[][] = [];
     for (let i = 0; i < contents.length; i += batchSize) {
@@ -391,12 +391,12 @@ export async function processMaterial(materialId: string) {
     }
     if (embeddings.length !== chunks.length) throw new Error("Embedding count mismatch");
 
-    // Verify dimension matches schema (bge-small 384; AIService already
+    // Verify dimension matches schema (Gemini 768; AIService already
     // throws on mismatch — this is a second, explicit gate before insert).
     if (embeddings[0]?.length !== EMBEDDING_DIM) {
       throw new Error(
         `Embedding dimension ${embeddings[0]?.length} does not match schema (${EMBEDDING_DIM}). ` +
-          `Run db/schema/004_embeddings_384.sql and use one embedding model at a time.`
+          `Run db/schema/006_embeddings_gemini_768.sql and use one embedding model at a time.`
       );
     }
 

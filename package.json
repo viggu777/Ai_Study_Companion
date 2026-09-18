@@ -17,6 +17,7 @@
     "eval": "tsx tests/eval/run-eval.ts"
   },
   "dependencies": {
+    "@google/genai": "^2.23.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.109.0",
     "inngest": "^4.20.0",

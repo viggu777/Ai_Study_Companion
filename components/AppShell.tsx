@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Sidebar, {
   SIDEBAR_WIDTH_COLLAPSED,
   SIDEBAR_WIDTH_FULL,
@@ -27,19 +27,12 @@ export default function AppShell({
 }) {
   const [collapsed] = useSidebarCollapsed();
   const [mobileOpen, setMobileOpen] = useState(false);
-  // Display name is editable from the sidebar profile card — keep it in the
-  // shell so Sidebar + TopBar stay in sync without a page reload.
-  const [displayName, setDisplayName] = useState(userName);
-  useEffect(() => {
-    setDisplayName(userName);
-  }, [userName, userEmail]);
 
   return (
     <div className="h-dvh overflow-hidden bg-stone-100">
       <Sidebar
         userEmail={userEmail}
-        userName={displayName}
-        onDisplayNameChange={setDisplayName}
+        userName={userName}
         isAdmin={isAdmin}
         mobileOpen={mobileOpen}
         onCloseMobile={() => setMobileOpen(false)}
@@ -48,7 +41,7 @@ export default function AppShell({
         data-sidebar-offset={collapsed ? "collapsed" : "full"}
         className="flex h-dvh flex-col transition-all duration-200 ease-out"
       >
-        <TopBar userEmail={userEmail} userName={displayName} isAdmin={isAdmin} onMenu={() => setMobileOpen(true)} />
+        <TopBar userEmail={userEmail} userName={userName} isAdmin={isAdmin} onMenu={() => setMobileOpen(true)} />
         <main className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">{children}</main>
       </div>
       <style

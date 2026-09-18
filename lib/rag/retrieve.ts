@@ -14,9 +14,9 @@ import { logAiOperation } from "@/lib/ai/observability";
  * Cosine similarity threshold for relevance.
  * Chunks below this similarity are considered not relevant.
  * Named constant per spec — not an inline magic number.
- * BAAI/bge-small-en-v1.5 typically yields 0.5-0.9 for related content,
- * 0.2-0.5 for unrelated; 0.25 is conservative to avoid false negatives
- * while still filtering truly irrelevant queries.
+ * Kept at 0.25 after the Gemini migration (gemini-embedding-001, 768d):
+ * conservative enough to avoid false negatives while still filtering
+ * truly irrelevant queries. Same threshold as the previous bge-small setup.
  */
 export const RELEVANCE_THRESHOLD = 0.25;
 
@@ -123,7 +123,8 @@ export function balanceChunks(
 /**
  * Project-scoped retrieval.
  * - Validates project ownership (WHERE id = projectId AND user_id = userId)
- * - Embeds query via AIService (local bge-small-en-v1.5, 384 dims)
+ * - Embeds query via AIService (Gemini gemini-embedding-001, 768 dims — same
+ *   model/config as document chunks)
  * - Runs pgvector cosine similarity search filtered by project_id
  * - Balances chunks across materials (round-robin) + boosts a user-named file
  * - Returns top-K above threshold, or insufficient_evidence if none qualify
@@ -224,7 +225,7 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
   const overFetch = Math.min(Math.max(topK * Math.max(readyList.length, 1), topK), 100);
 
   // 4. pgvector cosine-similarity search via RPC
-  // RPC: match_chunks(query_embedding vector(384), match_project_id uuid, match_threshold float, match_count int)
+  // RPC: match_chunks(query_embedding vector(768), match_project_id uuid, match_threshold float, match_count int)
   // Returns rows with similarity = 1 - (embedding <=> query_embedding)
   const { data, error } = await db.rpc("match_chunks", {
     query_embedding: queryEmbedding as unknown as string,

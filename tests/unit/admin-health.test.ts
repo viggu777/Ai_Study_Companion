@@ -77,7 +77,7 @@ describe("system health page wiring", () => {
     const src = read("services/admin.service.ts");
     expect(src).toContain("getAdminSystemHealth");
     // Presence-only env reads; details interpolate only non-secret labels.
-    expect(src).not.toMatch(/detail:.*process\.env\.(MERCURY_API_KEY|META_API_KEY|GROQ_API_KEY|SUPABASE_SERVICE_ROLE_KEY|INNGEST_SIGNING_KEY)\}/);
+    expect(src).not.toMatch(/detail:.*process\.env\.(MERCURY_API_KEY|META_API_KEY|GEMINI_API_KEY|GROQ_API_KEY|SUPABASE_SERVICE_ROLE_KEY|INNGEST_SIGNING_KEY)\}/);
   });
 
   it("health is linked from the sidebar and topbar (single admin nav, no in-page tabs)", () => {

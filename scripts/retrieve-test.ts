@@ -11,13 +11,16 @@
  * when env vars not set (falls back to local cosine calc demo).
  */
 
+import { loadEnvConfig } from "@next/env";
+loadEnvConfig(process.cwd());
+
 import { retrieve, RELEVANCE_THRESHOLD, DEFAULT_TOP_K } from "../lib/rag/retrieve";
 
 async function main() {
   const [, , projectId, query, topKRaw] = process.argv;
   if (!projectId || !query) {
     console.log(`Usage: npx tsx scripts/retrieve-test.ts <projectId> "query" [topK]`);
-    console.log(`\nEnv required: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (or session), GROQ_API_KEY`);
+    console.log(`\nEnv required: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (or session), GEMINI_API_KEY`);
     console.log(`Threshold: ${RELEVANCE_THRESHOLD}, default topK: ${DEFAULT_TOP_K}`);
     console.log(`\nExample: npx tsx scripts/retrieve-test.ts 00000000-0000-0000-0000-000000000000 "what is photosynthesis?"`);
     process.exit(1);
@@ -36,8 +39,8 @@ async function main() {
   console.log("");
 
   // Demo cosine fallback without DB — shows threshold filtering logic works
-  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.GROQ_API_KEY) {
-    console.log("No Supabase/Groq env — running local cosine demo instead of live retrieval.\n");
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.GEMINI_API_KEY) {
+    console.log("No Supabase/Gemini env — running local cosine demo instead of live retrieval.\n");
     const qEmb = [0.9, 0.1, 0.0];
     const chunks = [
       { content: "Photosynthesis converts light energy into chemical energy", emb: [0.88, 0.12, 0.01] },

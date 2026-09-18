@@ -1,7 +1,7 @@
 /**
  * AIService — thin abstraction over AI providers (architecture.md §10)
  *
- * Provider split (testing default: Mercury for chat, Groq for embeddings):
+ * Provider split:
  * - Chat / structured generation / evaluation → Mercury (Inception Labs)
  *   OpenAI-compatible endpoint, default https://api.inceptionlabs.ai/v1,
  *   model `mercury-2.5` (verified live: supports json_mode + structured_outputs,
@@ -13,21 +13,22 @@
  *   model `Llama-4-Maverick-17B-128E-Instruct-FP8`. Used automatically when
  *   MERCURY_API_KEY is unset. Env: META_API_KEY, META_API_BASE_URL (optional).
  *   Production switch = unset MERCURY_API_KEY + set META_API_KEY. No code change.
- * - Embeddings → local FastEmbed service by default: BAAI/bge-small-en-v1.5
- *   (384 dims, free/open-source, Docker in embeddings/). Neither Mercury
- *   (verified 404 on POST /v1/embeddings) nor Meta's Llama API (verified 404)
- *   exposes an embeddings endpoint. chunks.embedding is VECTOR(384) per
- *   db/schema/004_embeddings_384.sql. Explicit fallback: EMBEDDING_PROVIDER=groq
- *   (nomic-embed-text-v1.5, 768 dims — requires re-migrating the column back).
- *   Env: EMBEDDING_PROVIDER (local|groq, default local), EMBEDDING_API_BASE_URL
- *   (default http://localhost:8000/v1), EMBEDDING_MODEL (default
- *   BAAI/bge-small-en-v1.5), EMBEDDING_API_KEY (optional), GROQ_API_KEY
- *   (only for the groq fallback).
+ * - Embeddings → Google Gemini Embeddings API (`gemini-embedding-001`,
+ *   768 dims via outputDimensionality truncation, Free Tier eligible).
+ *   Neither Mercury (verified 404 on POST /v1/embeddings) nor Meta's Llama API
+ *   (verified 404) exposes an embeddings endpoint. chunks.embedding is
+ *   VECTOR(768) per db/schema/006_embeddings_gemini_768.sql. Never mix vectors
+ *   from different models — old bge-small (384d) / nomic (768d) rows must be
+ *   purged + re-embedded via Retry (see 006 migration).
+ *   Env: GEMINI_API_KEY (required, server-only), GEMINI_EMBEDDING_MODEL
+ *   (optional, defaults to gemini-embedding-001), GEMINI_EMBEDDING_DIM
+ *   (optional, defaults to 768 — must match chunks.embedding).
  *
  * Interface is stable so callers never need to know which provider handled what.
  */
 
 import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 
 // Mercury (Inception Labs) — chat / structured / evaluate (testing default)
 const MERCURY_BASE_URL = process.env.MERCURY_API_BASE_URL || "https://api.inceptionlabs.ai/v1";
@@ -37,25 +38,23 @@ const MERCURY_CHAT_MODEL = process.env.MERCURY_CHAT_MODEL || "mercury-2.5";
 const META_BASE_URL = process.env.META_API_BASE_URL || "https://api.llama.com/compat/v1";
 const META_CHAT_MODEL = "Llama-4-Maverick-17B-128E-Instruct-FP8";
 
-// Embeddings — local FastEmbed service by default (BAAI/bge-small-en-v1.5,
-// 384 dims, see embeddings/ + db/schema/004_embeddings_384.sql). Groq kept as
-// an explicit fallback (EMBEDDING_PROVIDER=groq) — note Groq nomic is 768 dims
-// and is INCOMPATIBLE with the 384-dim column; switching providers requires
-// migrating the column back. Never mix dimensions in chunks.embedding.
-const EMBEDDING_PROVIDER = (process.env.EMBEDDING_PROVIDER || "local").toLowerCase();
-const LOCAL_EMBED_BASE_URL = process.env.EMBEDDING_API_BASE_URL || "http://localhost:8000/v1";
-const LOCAL_EMBED_MODEL = process.env.EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5";
-const LOCAL_EMBED_DIM = 384;
-const LOCAL_EMBED_API_KEY = process.env.EMBEDDING_API_KEY || "local";
-
-const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
-const GROQ_EMBEDDING_MODEL = "nomic-embed-text-v1.5";
-const GROQ_EMBEDDING_DIM = 768;
+// Embeddings — Google Gemini Embeddings API (single provider for both
+// document chunks and query embeddings — same model + same config).
+// Default: gemini-embedding-001 with outputDimensionality=768 (Matryoshka
+// truncation; 3072 native). 768 keeps storage/vector-search cost low and is
+// more than sufficient given the previous 384-dim model worked. Override via
+// GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIM only together with a matching
+// chunks.embedding migration. Never mix dimensions in chunks.embedding.
+const GEMINI_EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+const GEMINI_EMBEDDING_DIM = (() => {
+  const raw = process.env.GEMINI_EMBEDDING_DIM || "768";
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 768;
+})();
 
 // Request timeouts — a hung provider must fail fast with an actionable
 // message instead of hanging the UI until the platform kills the request.
 const CHAT_TIMEOUT_MS = 90_000;
-const EMBEDDING_TIMEOUT_MS = 60_000;
 
 /**
  * Map low-level provider errors (timeouts, connection failures) to
@@ -72,7 +71,7 @@ export function friendlyAiErrorMessage(e: unknown): string {
   return msg;
 }
 
-const EMBEDDING_DIMENSION = EMBEDDING_PROVIDER === "groq" ? GROQ_EMBEDDING_DIM : LOCAL_EMBED_DIM;
+const EMBEDDING_DIMENSION = GEMINI_EMBEDDING_DIM;
 
 /**
  * Mercury request shaping. Mercury is a reasoning model with two quirks
@@ -135,27 +134,18 @@ function getChatClient(): ChatClient {
   };
 }
 
-function getGroqClient(): OpenAI {
-  const apiKey = process.env.GROQ_API_KEY;
+function getGeminiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("GROQ_API_KEY environment variable is not set (required for EMBEDDING_PROVIDER=groq)");
+    throw new Error(
+      "GEMINI_API_KEY environment variable is not set (required for Gemini embeddings). Get a free key at https://aistudio.google.com/apikey and set GEMINI_API_KEY in .env.local — never expose it to client-side code."
+    );
   }
-  return new OpenAI({
-    apiKey,
-    baseURL: GROQ_BASE_URL,
-    timeout: EMBEDDING_TIMEOUT_MS,
-  });
-}
-
-function getLocalEmbedClient(): OpenAI {
-  return new OpenAI({ apiKey: LOCAL_EMBED_API_KEY, baseURL: LOCAL_EMBED_BASE_URL, timeout: EMBEDDING_TIMEOUT_MS });
+  return new GoogleGenAI({ apiKey });
 }
 
 export function getActiveEmbeddingInfo(): { provider: string; model: string; dimension: number } {
-  if (EMBEDDING_PROVIDER === "groq") {
-    return { provider: "groq", model: GROQ_EMBEDDING_MODEL, dimension: GROQ_EMBEDDING_DIM };
-  }
-  return { provider: "local", model: LOCAL_EMBED_MODEL, dimension: LOCAL_EMBED_DIM };
+  return { provider: "gemini", model: GEMINI_EMBEDDING_MODEL, dimension: GEMINI_EMBEDDING_DIM };
 }
 
 export interface GenerateTextOptions {
@@ -271,34 +261,48 @@ export const aiService: AIService = {
   },
 
   async generateEmbedding({ input }: GenerateEmbeddingOptions) {
+    // Single embedding path for BOTH document chunks and user queries —
+    // same Gemini model + same outputDimensionality, so doc and query vectors
+    // are always comparable. Do not introduce separate taskType configs here.
     const info = getActiveEmbeddingInfo();
-    let client: OpenAI;
-    let model: string;
-    if (info.provider === "groq") {
-      client = getGroqClient();
-      model = GROQ_EMBEDDING_MODEL;
-    } else {
-      client = getLocalEmbedClient();
-      model = LOCAL_EMBED_MODEL;
-    }
+    const model = info.model;
     const inputs = Array.isArray(input) ? input : [input];
+    if (inputs.length === 0 || inputs.some((t) => typeof t !== "string" || t.trim().length === 0)) {
+      throw new Error("generateEmbedding: input must be a non-empty string or list of non-empty strings");
+    }
+    let client: GoogleGenAI;
+    try {
+      client = getGeminiClient();
+    } catch (e) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
     let response;
     try {
-      response = await client.embeddings.create({
+      response = await client.models.embedContent({
         model,
-        input: inputs,
-        encoding_format: "float",
+        contents: inputs,
+        config: { outputDimensionality: info.dimension },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (info.provider !== "groq" && (msg.includes("fetch failed") || msg.includes("ECONNREFUSED") || msg.includes("Connect"))) {
+      if (/429|RESOURCE_EXHAUSTED|rate limit|quota/i.test(msg)) {
         throw new Error(
-          `Local embeddings service unreachable at ${LOCAL_EMBED_BASE_URL} — start it with: cd embeddings && docker compose up -d --build. Original: ${msg}`
+          `Gemini embedding rate limit hit (${model}). Free Tier is ~100 req/min — back off and retry; batch sizes of 20 are already used. Original: ${msg}`
+        );
+      }
+      if (/API_KEY|API key|APIKEY_INVALID|401|403/i.test(msg)) {
+        throw new Error(
+          `Gemini embedding auth failed — check GEMINI_API_KEY (https://aistudio.google.com/apikey). Original: ${msg}`
         );
       }
       throw new Error(friendlyAiErrorMessage(e));
     }
-    const vectors = response.data.map((d) => d.embedding);
+    const vectors = (response.embeddings ?? []).map((emb) => emb.values ?? []);
+    if (vectors.length !== inputs.length || vectors.some((v) => !Array.isArray(v) || v.length === 0)) {
+      throw new Error(
+        `Invalid embedding response from Gemini (${model}): expected ${inputs.length} vectors, got ${vectors.length}.`
+      );
+    }
     // Guard against model/DB dimension drift — a wrong-size vector would fail
     // deep in pgvector with a cryptic error. Fail here with an actionable one.
     if (vectors[0]?.length !== info.dimension) {

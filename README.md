@@ -38,18 +38,18 @@ the closed learning loop in `docs/architecture.md`.
     | `MERCURY_API_BASE_URL` | Optional, defaults to `https://api.inceptionlabs.ai/v1` |
     | `MERCURY_CHAT_MODEL` | Optional, defaults to `mercury-2.5` |
    | `META_API_BASE_URL` | Optional, defaults to `https://api.llama.com/compat/v1` |
-    | `GROQ_API_KEY` | Only for `EMBEDDING_PROVIDER=groq` fallback (768 dims, needs column re-migration). Default embeddings are local: `BAAI/bge-small-en-v1.5` (384 dims) via Docker — see `embeddings/README.md`. `chunks.embedding` is `VECTOR(384)` per `db/schema/004_embeddings_384.sql`. |
-   | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Inngest background jobs (material processing, mastery, recommendations) |
-   | `EMBEDDING_PROVIDER` | `local` (default, `BAAI/bge-small-en-v1.5` 384 dims via `embeddings/` Docker) or `groq` fallback |
-   | `EMBEDDING_API_BASE_URL` | Optional, defaults to `http://localhost:8000/v1` |
-   | `EMBEDDING_MODEL` | Optional, defaults to `BAAI/bge-small-en-v1.5` |
-   | `INNGEST_DEV` | Set `=1` for local dev so missing Inngest keys fall back to direct processing instead of timing out |
+    | `GEMINI_API_KEY` | Google Gemini Embeddings API key (server-only, never client) — free tier at https://aistudio.google.com/apikey. `chunks.embedding` is `VECTOR(768)` per `db/schema/006_embeddings_gemini_768.sql`. |
+    | `GEMINI_EMBEDDING_MODEL` | Optional, defaults to `gemini-embedding-001` |
+    | `GEMINI_EMBEDDING_DIM` | Optional, defaults to `768` (must match `chunks.embedding`) |
+    | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Inngest background jobs (material processing, mastery, recommendations) |
+    | `INNGEST_DEV` | Set `=1` for local dev so missing Inngest keys fall back to direct processing instead of timing out |
    | `ADMIN_EMAILS`, `ADMIN_USER_IDS` | Prototype admin allow-list for `/admin/*` (comma-separated) |
 
 3. Run the database migrations (`db/schema/README.md`): apply
    `db/schema/001_initial_schema.sql`, then `002_retrieve.sql`,
    then `003_storage.sql`, then `004_embeddings_384.sql`, then
-   `005_conversation_summary.sql` in order via the
+   `005_conversation_summary.sql`, then `006_embeddings_gemini_768.sql`
+   in order via the
    Supabase SQL Editor, ensuring the `materials` Storage bucket exists (private).
 
 4. Run the development server:
@@ -99,28 +99,24 @@ Data/Auth/Storage live in one Supabase project (Postgres + pgvector + Auth +
 private `materials` bucket). Retrieval is pgvector `match_chunks` scoped by
 `project_id` with `RELEVANCE_THRESHOLD=0.25`. Runtime AI goes through
 `lib/ai/AIService.ts`: chat/structured defaults to Mercury `mercury-2.5` with
-Meta `Llama-4-Maverick-17B-128E-Instruct-FP8` fallback; embeddings default to
-local `BAAI/bge-small-en-v1.5` (384 dims, `chunks.embedding VECTOR(384)`).
+Meta `Llama-4-Maverick-17B-128E-Instruct-FP8` fallback; embeddings use Google
+Gemini `gemini-embedding-001` (768 dims, `chunks.embedding VECTOR(768)`).
 Full spec: `docs/architecture.md` (single source of truth).
 
 ## Embedding-service setup
 
-Default embeddings are local — no API key needed:
+Embeddings use Google Gemini (Free Tier eligible) — no Docker needed:
 
 ```bash
-cd embeddings
-docker compose up -d --build
-curl localhost:8000/health
-# {"status":"ok","model":"BAAI/bge-small-en-v1.5","dimension":384}
+# .env.local
+GEMINI_API_KEY=your-key-from-https://aistudio.google.com/apikey
 ```
 
-Keep the defaults (`EMBEDDING_PROVIDER=local`,
-`EMBEDDING_API_BASE_URL=http://localhost:8000/v1`,
-`EMBEDDING_MODEL=BAAI/bge-small-en-v1.5`) and apply
-`db/schema/004_embeddings_384.sql` so `chunks.embedding` stays `VECTOR(384)`.
-Groq `nomic-embed-text-v1.5` (768 dims) is an explicit opt-in fallback only
-(`EMBEDDING_PROVIDER=groq` + `GROQ_API_KEY`, plus a column re-migration).
-Details: `embeddings/README.md`.
+Apply `db/schema/006_embeddings_gemini_768.sql` so `chunks.embedding` stays
+`VECTOR(768)`. Old bge-small (384d) / nomic (768d) rows are purged by the
+migration — press Retry on FAILED materials or run
+`npx tsx scripts/reindex-gemini-embeddings.ts` to re-embed.
+Legacy local Docker setup kept in `embeddings/README.md` for reference only.
 
 ## Configuration examples
 

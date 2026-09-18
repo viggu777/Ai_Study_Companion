@@ -1,12 +1,15 @@
+import { loadEnvConfig } from '@next/env';
+loadEnvConfig(process.cwd());
+
 import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME, ACTIVE_CHAT_PROVIDER, ACTIVE_EMBEDDING_PROVIDER, MERCURY_BASE_URL_VALUE, META_BASE_URL_VALUE } from './lib/ai/AIService';
 
 async function smokeTest() {
   const chatBase = ACTIVE_CHAT_PROVIDER === "mercury" ? MERCURY_BASE_URL_VALUE : META_BASE_URL_VALUE;
-  console.log('Starting smoke test for split AIService (Mercury chat + local bge-small embeddings)...\n');
+  console.log('Starting smoke test for split AIService (Mercury chat + Gemini embeddings)...\n');
   console.log(`  Chat provider: ${ACTIVE_CHAT_PROVIDER} — model ${CHAT_MODEL_NAME} @ ${chatBase}`);
   console.log(`  Embedding: ${ACTIVE_EMBEDDING_PROVIDER} ${EMBEDDING_MODEL_NAME} (${EMBEDDING_DIM} dims)`);
   console.log(`  MERCURY_API_KEY set: ${!!(process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY)}`);
-  console.log(`  GROQ_API_KEY set: ${!!process.env.GROQ_API_KEY && !process.env.GROQ_API_KEY.includes('your-groq')}\n`);
+  console.log(`  GEMINI_API_KEY set: ${!!process.env.GEMINI_API_KEY}\n`);
   
   try {
     console.log('1. Testing generateText (chat provider)...');
@@ -63,7 +66,7 @@ async function smokeTest() {
       } else throw e;
     }
 
-    console.log('\n3. Testing generateEmbedding (local bge-small, 384 dims)...');
+    console.log('\n3. Testing generateEmbedding (Gemini gemini-embedding-001, 768 dims)...');
     try {
       const embeddingResult = await aiService.generateEmbedding({
         input: 'Hello world',
@@ -77,15 +80,14 @@ async function smokeTest() {
       const msg = e instanceof Error ? e.message : String(e);
       const lower = msg.toLowerCase();
       if (
-        msg.includes('Local embeddings service unreachable') ||
-        msg.includes('GROQ_API_KEY') ||
-        msg.includes('your-groq') ||
+        msg.includes('GEMINI_API_KEY') ||
+        msg.includes('Gemini') ||
         msg.includes('Authentication') ||
         msg.includes('Invalid API Key') ||
         msg.includes('invalid_api_key') ||
         lower.includes('401')
       ) {
-        console.log('⚠ generateEmbedding skipped/failed (is the Docker service up? cd embeddings && docker compose up -d):', msg.slice(0, 500));
+        console.log('⚠ generateEmbedding skipped/failed (set GEMINI_API_KEY from https://aistudio.google.com/apikey):', msg.slice(0, 500));
       } else throw e;
     }
 
@@ -114,8 +116,8 @@ async function smokeTest() {
       } else throw e;
     }
 
-    console.log('\n✅ Smoke test wiring complete — check above for real provider calls. If keys were dummy, failures are expected and prove correct provider routing (Mercury vs Groq).');
-    console.log('   To verify real results: set real META_API_KEY and GROQ_API_KEY in .env.local and re-run: npx tsx smoke-test.ts');
+    console.log('\n✅ Smoke test wiring complete — check above for real provider calls. If keys were dummy, failures are expected and prove correct provider routing (Mercury vs Gemini).');
+    console.log('   To verify real results: set real META_API_KEY and GEMINI_API_KEY in .env.local and re-run: npx tsx smoke-test.ts');
   } catch (error) {
     console.error('\n❌ Smoke test failed:', error);
     process.exit(1);

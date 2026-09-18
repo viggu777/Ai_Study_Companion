@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIcon,
@@ -10,7 +10,6 @@ import {
   CardsIcon,
   ChartIcon,
   ChatIcon,
-  ChevronUpIcon,
   ConceptsIcon,
   CpuIcon,
   DashboardIcon,
@@ -30,7 +29,6 @@ import { avatarTone, initialOf } from "./avatar";
 interface SidebarProps {
   userEmail: string | null;
   userName: string;
-  onDisplayNameChange: (next: string) => void;
   isAdmin: boolean;
   /** mobile drawer state is controlled by AppShell (hamburger lives in TopBar) */
   mobileOpen: boolean;
@@ -218,19 +216,15 @@ function NavSection({
   );
 }
 
-export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAdmin, mobileOpen, onCloseMobile }: SidebarProps) {
+export default function Sidebar({ userEmail, userName, isAdmin, mobileOpen, onCloseMobile }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsed, setCollapsed] = useSidebarCollapsed();
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [draftName, setDraftName] = useState(userName);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const close = () => onCloseMobile();
 
-  // Close the mobile drawer + profile card on navigation.
+  // Close the mobile drawer on navigation.
   useEffect(() => {
-    setProfileOpen(false);
     onCloseMobile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
@@ -242,12 +236,6 @@ export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAd
   const workspaceItems = workspaceNavItems(isAdmin);
   const tone = avatarTone(userEmail ?? userName);
   const initial = initialOf(userName);
-
-  const openProfile = () => {
-    setDraftName(userName);
-    setSaveError(null);
-    setProfileOpen(true);
-  };
 
   const handleLogout = async () => {
     if (loggingOut) return;
@@ -261,30 +249,6 @@ export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAd
       // Full navigation (not router.push): clears RSC cache + client state
       // so no authenticated UI flashes after logout.
       window.location.href = "/login";
-    }
-  };
-
-  const saveName = async () => {
-    const next = draftName.trim();
-    if (!next || next === userName || saving) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const res = await fetch("/api/profile", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ display_name: next }),
-      });
-      const body = (await res.json().catch(() => null)) as { display_name?: unknown; error?: unknown } | null;
-      if (!res.ok || typeof body?.display_name !== "string") {
-        throw new Error(typeof body?.error === "string" ? body.error : "Failed to save name");
-      }
-      onDisplayNameChange(body.display_name);
-      setProfileOpen(false);
-    } catch (e) {
-      setSaveError(e instanceof Error ? e.message : "Failed to save name");
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -356,96 +320,26 @@ export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAd
         )}
       </nav>
 
-      <div className={cx("relative border-t border-stone-200", collapsed ? "p-2" : "p-3")}>
-        {/* Profile card popover — name, email + editable display name */}
-        {profileOpen && (
-          <>
-            <button
-              type="button"
-              aria-label="Close profile"
-              onClick={() => setProfileOpen(false)}
-              className="fixed inset-0 z-40 cursor-default bg-transparent"
-            />
-            <div
-              role="dialog"
-              aria-label="Profile"
-              className="absolute bottom-full left-0 z-50 mb-2 w-64 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-card-hover"
-            >
-              <div className="flex items-center gap-3 p-4">
-                <span
-                  aria-hidden
-                  className={cx(
-                    "flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold ring-1 ring-inset",
-                    tone.bg,
-                    tone.text,
-                    tone.ring
-                  )}
-                >
-                  {initial}
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-stone-900" title={userName}>
-                    {userName}
-                  </p>
-                  {userEmail && (
-                    <p className="truncate text-xs text-stone-400" title={userEmail}>
-                      {userEmail}
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="border-t border-stone-100 p-4 pt-3">
-                <label htmlFor="asc-display-name" className="mb-1.5 block text-xs font-medium text-stone-700">
-                  Display name
-                </label>
-                <input
-                  id="asc-display-name"
-                  value={draftName}
-                  onChange={(e) => setDraftName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      void saveName();
-                    } else if (e.key === "Escape") {
-                      setProfileOpen(false);
-                    }
-                  }}
-                  maxLength={60}
-                  placeholder="Your name"
-                  className="block w-full rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-900 placeholder:text-stone-400 focus:border-sky-600 focus:outline-none"
-                />
-                {saveError && (
-                  <p role="alert" className="mt-1.5 text-xs text-red-600">
-                    {saveError}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void saveName()}
-                  disabled={saving || !draftName.trim() || draftName.trim() === userName}
-                  className="mt-2.5 w-full rounded-lg bg-stone-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {saving ? "Saving…" : "Save name"}
-                </button>
-                <Link
-                  href="/profile"
-                  onClick={close}
-                  className="mt-2 block w-full rounded-lg border border-stone-200 px-3 py-1.5 text-center text-xs font-medium text-stone-700 transition-colors hover:bg-stone-50"
-                >
-                  View full profile
-                </Link>
-              </div>
-            </div>
-          </>
-        )}
-        <button
-          type="button"
-          onClick={() => (profileOpen ? setProfileOpen(false) : openProfile())}
-          aria-expanded={profileOpen}
-          aria-label="Open profile"
-          title={collapsed ? userName : undefined}
+      <div className={cx("border-t border-stone-200", collapsed ? "p-2" : "p-3")}>
+        {/* Profile — no popover. Double-click row to open /profile. Single click does nothing. */}
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label={`${userName} — double-click to open profile`}
+          title={collapsed ? `${userName} — double-click for profile` : "Double-click to open profile"}
+          onDoubleClick={() => {
+            close();
+            router.push("/profile");
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              close();
+              router.push("/profile");
+            }
+          }}
           className={cx(
-            "flex w-full items-center gap-2.5 rounded-lg py-2 text-left transition-colors hover:bg-stone-100",
+            "flex w-full select-none items-center gap-2.5 rounded-lg py-2 text-left",
             collapsed ? "justify-center px-0" : "px-2"
           )}
         >
@@ -472,12 +366,7 @@ export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAd
               )}
             </span>
           )}
-          {!collapsed && (
-            <ChevronUpIcon
-              className={cx("h-4 w-4 shrink-0 text-stone-400 transition-transform", profileOpen && "rotate-180")}
-            />
-          )}
-        </button>
+        </div>
         <button
           type="button"
           onClick={() => void handleLogout()}
@@ -492,28 +381,24 @@ export default function Sidebar({ userEmail, userName, onDisplayNameChange, isAd
           <LogoutIcon className="h-[18px] w-[18px]" />
           {!collapsed && (loggingOut ? "Signing out…" : "Logout")}
         </button>
-        {/* Collapse toggle — desktop-only. The collapsed rail width only applies
-            at lg+, so showing this toggle on mobile made it look broken
-            (tapping it changed state with zero visible effect). */}
-        <button
-          type="button"
-          onClick={() => setCollapsed((v) => !v)}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className={cx(
-            "mt-1 hidden w-full items-center rounded-lg text-[13.5px] font-medium text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-900 lg:flex",
-            collapsed ? "justify-center px-0 py-2.5" : "gap-2.5 px-3 py-2"
-          )}
-        >
-          <span
-            aria-hidden
-            className={cx("inline-block transition-transform duration-200", collapsed ? "rotate-180" : "")}
+        {/* Collapse toggle — small icon-only, desktop-only. */}
+        <div className="mt-1 hidden justify-center lg:flex">
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="rounded-lg p-2 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
           >
-            <ArrowRightIcon className="h-[18px] w-[18px] rotate-180" />
-          </span>
-          {!collapsed && "Collapse"}
-        </button>
+            <span
+              aria-hidden
+              className={cx("block transition-transform duration-200", collapsed ? "rotate-180" : "")}
+            >
+              <ArrowRightIcon className="h-[16px] w-[16px] rotate-180" />
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   );

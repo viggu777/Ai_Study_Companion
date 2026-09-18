@@ -512,7 +512,7 @@ export interface AdminSystemHealth {
   checkedAt: string;
   chatProvider: "mercury" | "meta" | "none";
   chatModel: string | null;
-  embeddingProvider: "local" | "groq";
+  embeddingProvider: "gemini";
   embeddingModel: string;
   checks: HealthCheck[];
   aiFailureCount24h: number | null;
@@ -601,41 +601,12 @@ function checkChatConfig(): HealthCheck {
 }
 
 async function checkEmbeddings(): Promise<HealthCheck> {
-  const provider = (process.env.EMBEDDING_PROVIDER || "local").toLowerCase() === "groq" ? "groq" : "local";
-  if (provider === "groq") {
-    if (!process.env.GROQ_API_KEY) {
-      return { key: "embeddings", label: "Embeddings", status: "not_configured", detail: "EMBEDDING_PROVIDER=groq but GROQ_API_KEY is not set. Retrieval will fail." };
-    }
-    return { key: "embeddings", label: "Embeddings", status: "ok", detail: "Groq embeddings configured (model nomic-embed-text-v1.5). Configuration check only — no live call, no cost." };
+  const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+  const dim = process.env.GEMINI_EMBEDDING_DIM || "768";
+  if (!process.env.GEMINI_API_KEY) {
+    return { key: "embeddings", label: "Embeddings", status: "not_configured", detail: "GEMINI_API_KEY is not set. Retrieval will fail — set it in .env.local (see .env.example)." };
   }
-  const baseUrl = process.env.EMBEDDING_API_BASE_URL || "http://localhost:8000/v1";
-  const model = process.env.EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5";
-  const t0 = Date.now();
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-    try {
-      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, { signal: controller.signal });
-      if (!res.ok) {
-        return { key: "embeddings", label: "Embeddings", status: "degraded", detail: `Local embedding service responded HTTP ${res.status} at ${baseUrl} (model ${model}).`, latencyMs: Date.now() - t0 };
-      }
-      return { key: "embeddings", label: "Embeddings", status: "ok", detail: `Local embedding service reachable at ${baseUrl} (model ${model}, live probe).`, latencyMs: Date.now() - t0 };
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    const unreachable = /abort|fetch failed|ECONNREFUSED|Connect|ENOTFOUND/i.test(msg);
-    return {
-      key: "embeddings",
-      label: "Embeddings",
-      status: "degraded",
-      detail: unreachable
-        ? `Local embedding service unreachable at ${baseUrl} (model ${model}) — start it: cd embeddings && docker compose up -d --build.`
-        : `Embedding probe could not run: ${msg.slice(0, 200)}`,
-      latencyMs: null,
-    };
-  }
+  return { key: "embeddings", label: "Embeddings", status: "ok", detail: `Gemini embeddings configured (model ${model}, ${dim}d). Configuration check only — no live call, no cost.` };
 }
 
 async function checkJobs(): Promise<HealthCheck> {
@@ -669,7 +640,7 @@ async function checkJobs(): Promise<HealthCheck> {
  * independently and failures render as their own status badge.
  */
 export async function getAdminSystemHealth(): Promise<AdminSystemHealth> {
-  const embeddingProvider = (process.env.EMBEDDING_PROVIDER || "local").toLowerCase() === "groq" ? ("groq" as const) : ("local" as const);
+  const embeddingProvider = "gemini" as const;
   const mercuryKey = process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
   const metaKey = process.env.META_API_KEY;
   const chatProvider = mercuryKey ? ("mercury" as const) : metaKey ? ("meta" as const) : ("none" as const);
@@ -742,7 +713,7 @@ export async function getAdminSystemHealth(): Promise<AdminSystemHealth> {
     chatProvider,
     chatModel,
     embeddingProvider,
-    embeddingModel: embeddingProvider === "groq" ? "nomic-embed-text-v1.5" : process.env.EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5",
+    embeddingModel: process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001",
     checks,
     aiFailureCount24h,
     materialFailedCount24h,
