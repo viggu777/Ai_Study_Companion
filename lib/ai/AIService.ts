@@ -7,12 +7,8 @@
  *   model `mercury-2.5` (verified live: supports json_mode + structured_outputs,
  *   so response_format: { type: "json_object" } + server-side validation holds).
  *   Mercury uses `max_completion_tokens` instead of `max_tokens` — mapped below.
- *   Env: MERCURY_API_KEY (or INCEPTION_API_KEY), MERCURY_API_BASE_URL
+ *   Env: MERCURY_API_KEY (or INCEPTION_API_KEY alias), MERCURY_API_BASE_URL
  *   (optional), MERCURY_CHAT_MODEL (optional, defaults to mercury-2.5).
- * - Chat fallback (production path) → Meta's Llama API (api.llama.com),
- *   model `Llama-4-Maverick-17B-128E-Instruct-FP8`. Used automatically when
- *   MERCURY_API_KEY is unset. Env: META_API_KEY, META_API_BASE_URL (optional).
- *   Production switch = unset MERCURY_API_KEY + set META_API_KEY. No code change.
  * - Embeddings → Google Gemini Embeddings API (`gemini-embedding-001`,
  *   768 dims via outputDimensionality truncation, Free Tier eligible).
  *   Neither Mercury (verified 404 on POST /v1/embeddings) nor Meta's Llama API
@@ -30,13 +26,9 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
 
-// Mercury (Inception Labs) — chat / structured / evaluate (testing default)
+// Mercury (Inception Labs) — chat / structured / evaluate (only provider)
 const MERCURY_BASE_URL = process.env.MERCURY_API_BASE_URL || "https://api.inceptionlabs.ai/v1";
 const MERCURY_CHAT_MODEL = process.env.MERCURY_CHAT_MODEL || "mercury-2.5";
-
-// Meta Llama API — chat / structured / evaluate (production fallback)
-const META_BASE_URL = process.env.META_API_BASE_URL || "https://api.llama.com/compat/v1";
-const META_CHAT_MODEL = "Llama-4-Maverick-17B-128E-Instruct-FP8";
 
 // Embeddings — Google Gemini Embeddings API (single provider for both
 // document chunks and query embeddings — same model + same config).
@@ -105,32 +97,20 @@ function isMercuryActive(): boolean {
 interface ChatClient {
   client: OpenAI;
   model: string;
-  /** Mercury expects max_completion_tokens; Meta/OpenAI-style expects max_tokens */
-  useMaxCompletionTokens: boolean;
   label: string;
 }
 
 function getChatClient(): ChatClient {
   const mercuryKey = getMercuryApiKey();
-  if (mercuryKey) {
-    return {
-      client: new OpenAI({ apiKey: mercuryKey, baseURL: MERCURY_BASE_URL, timeout: CHAT_TIMEOUT_MS }),
-      model: MERCURY_CHAT_MODEL,
-      useMaxCompletionTokens: true,
-      label: `Mercury/${MERCURY_CHAT_MODEL}`,
-    };
-  }
-  const metaKey = process.env.META_API_KEY;
-  if (!metaKey) {
+  if (!mercuryKey) {
     throw new Error(
-      "No chat provider configured: set MERCURY_API_KEY (testing) or META_API_KEY (production)"
+      "No chat provider configured: set MERCURY_API_KEY (INCEPTION_API_KEY is also accepted)"
     );
   }
   return {
-    client: new OpenAI({ apiKey: metaKey, baseURL: META_BASE_URL, timeout: CHAT_TIMEOUT_MS }),
-    model: META_CHAT_MODEL,
-    useMaxCompletionTokens: false,
-    label: `Meta/${META_CHAT_MODEL}`,
+    client: new OpenAI({ apiKey: mercuryKey, baseURL: MERCURY_BASE_URL, timeout: CHAT_TIMEOUT_MS }),
+    model: MERCURY_CHAT_MODEL,
+    label: `Mercury/${MERCURY_CHAT_MODEL}`,
   };
 }
 
@@ -220,7 +200,6 @@ function extractChatUsage(completion: { usage?: { prompt_tokens?: number; comple
  */
 const MODEL_PRICING: Array<{ match: RegExp; inputPer1k: number; outputPer1k: number }> = [
   { match: /mercury/i, inputPer1k: 0.0005, outputPer1k: 0.0015 },
-  { match: /llama-4-maverick/i, inputPer1k: 0.0004, outputPer1k: 0.0012 },
   { match: /gemini-embedding/i, inputPer1k: 0.00002, outputPer1k: 0 },
 ];
 
@@ -234,7 +213,7 @@ export function estimateCost(model: string, usage: AiUsage): number {
 
 export const aiService: AIService = {
   async generateText({ systemPrompt, userPrompt, temperature = 0.7, maxTokens = 2000 }: GenerateTextOptions) {
-    const { client, model, useMaxCompletionTokens } = getChatClient();
+    const { client, model } = getChatClient();
     let completion;
     try {
       completion = await client.chat.completions.create({
@@ -244,8 +223,8 @@ export const aiService: AIService = {
           { role: "user", content: userPrompt },
         ],
         // Mercury: medium (default) reasoning effort, clamped temp, budget headroom.
-        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-        ...(useMaxCompletionTokens ? { max_completion_tokens: mercuryBudget(maxTokens) } : { max_tokens: maxTokens }),
+        temperature: mercuryTemp(temperature),
+        max_completion_tokens: mercuryBudget(maxTokens),
       });
     } catch (e) {
       throw new Error(friendlyAiErrorMessage(e));
@@ -266,7 +245,7 @@ export const aiService: AIService = {
     temperature = 0.3,
     maxTokens = 2000,
   }: GenerateStructuredOptions<T>) {
-    const { client, model, useMaxCompletionTokens } = getChatClient();
+    const { client, model } = getChatClient();
     let completion;
     try {
       completion = await client.chat.completions.create({
@@ -275,12 +254,10 @@ export const aiService: AIService = {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-        ...(useMaxCompletionTokens
-          ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
-          : { max_tokens: maxTokens }),
-        // JSON mode (Mercury + Llama API both support it); keep server-side
-        // validation as second layer regardless.
+        temperature: mercuryTemp(temperature),
+        max_completion_tokens: mercuryBudget(maxTokens),
+        reasoning_effort: "low" as const,
+        // JSON mode + server-side validation as second layer.
         response_format: { type: "json_object" },
       });
     } catch (e) {
@@ -356,7 +333,7 @@ export const aiService: AIService = {
   },
 
   async generateTextWithUsage({ systemPrompt, userPrompt, temperature = 0.7, maxTokens = 2000 }: GenerateTextOptions) {
-    const { client, model, useMaxCompletionTokens } = getChatClient();
+    const { client, model } = getChatClient();
     let completion;
     try {
       completion = await client.chat.completions.create({
@@ -365,8 +342,8 @@ export const aiService: AIService = {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-        ...(useMaxCompletionTokens ? { max_completion_tokens: mercuryBudget(maxTokens) } : { max_tokens: maxTokens }),
+        temperature: mercuryTemp(temperature),
+        max_completion_tokens: mercuryBudget(maxTokens),
       });
     } catch (e) {
       throw new Error(friendlyAiErrorMessage(e));
@@ -387,7 +364,7 @@ export const aiService: AIService = {
     temperature = 0.3,
     maxTokens = 2000,
   }: GenerateStructuredOptions<T>) {
-    const { client, model, useMaxCompletionTokens } = getChatClient();
+    const { client, model } = getChatClient();
     let completion;
     try {
       completion = await client.chat.completions.create({
@@ -396,10 +373,9 @@ export const aiService: AIService = {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
-        ...(useMaxCompletionTokens
-          ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
-          : { max_tokens: maxTokens }),
+        temperature: mercuryTemp(temperature),
+        max_completion_tokens: mercuryBudget(maxTokens),
+        reasoning_effort: "low" as const,
         response_format: { type: "json_object" },
       });
     } catch (e) {
@@ -430,11 +406,9 @@ export const aiService: AIService = {
 };
 
 export const EMBEDDING_DIM = EMBEDDING_DIMENSION;
-export const CHAT_MODEL_NAME = isMercuryActive() ? MERCURY_CHAT_MODEL : META_CHAT_MODEL;
+export const CHAT_MODEL_NAME = MERCURY_CHAT_MODEL;
 export const EMBEDDING_MODEL_NAME = getActiveEmbeddingInfo().model;
-export const META_MODEL_NAME = META_CHAT_MODEL;
-export const META_BASE_URL_VALUE = META_BASE_URL;
 export const MERCURY_MODEL_NAME = MERCURY_CHAT_MODEL;
 export const MERCURY_BASE_URL_VALUE = MERCURY_BASE_URL;
-export const ACTIVE_CHAT_PROVIDER = isMercuryActive() ? "mercury" : "meta";
+export const ACTIVE_CHAT_PROVIDER = "mercury" as const;
 export const ACTIVE_EMBEDDING_PROVIDER = getActiveEmbeddingInfo().provider;

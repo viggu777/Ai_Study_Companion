@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 // Runs evaluation fixtures offline (deterministic) and attempts live AI calls if keys present
-// Writes tests/eval/results.json and prints summary for docs/evaluation.md
+// Writes tests/eval/results.json and prints summary for the evaluation report
 
 import fs from "fs";
 import path from "path";
@@ -101,7 +101,7 @@ async function run() {
     }
 
     // Also attempt live AI call if keys available (best-effort)
-    if (process.env.META_API_KEY && process.env.META_API_KEY !== "dummy" && f.evidence.length > 0) {
+    if ((process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY) && f.evidence.length > 0) {
       try {
         const { aiService } = await import("@/lib/ai/AIService");
         const prompt = buildTutorUserPrompt({

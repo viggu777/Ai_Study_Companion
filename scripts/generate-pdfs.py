@@ -2,10 +2,11 @@
 """Generate submission PDFs from markdown sources (phase 19).
 
 Uses `markdown` + `weasyprint` (pip install markdown weasyprint).
+Docs live in local-only extra-docs/ (gitignored, never pushed).
 Outputs:
-  docs/architecture.pdf          from docs/architecture.md
-  docs/ai-tools-usage.pdf        from docs/ai-tools-usage.md
-  docs/development-prompts.pdf   concatenated docs/development-prompts/NN-*.md
+  extra-docs/docs/architecture.pdf          from extra-docs/docs/architecture.md
+  extra-docs/docs/ai-tools-usage.pdf        from extra-docs/docs/ai-tools-usage.md
+  extra-docs/docs/development-prompts.pdf   concatenated extra-docs/docs/development-prompts/NN-*.md
 """
 import pathlib
 
@@ -13,7 +14,7 @@ import markdown
 from weasyprint import HTML
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DOCS = ROOT / "docs"
+DOCS = ROOT / "extra-docs" / "docs"
 
 CSS = """
 @page { size: A4; margin: 2cm; }

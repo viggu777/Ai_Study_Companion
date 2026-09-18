@@ -817,7 +817,7 @@ export type OverallHealth = "HEALTHY" | "DEGRADED";
 export interface AdminSystemHealth {
   overall: OverallHealth;
   checkedAt: string;
-  chatProvider: "mercury" | "meta" | "none";
+  chatProvider: "mercury" | "none";
   chatModel: string | null;
   embeddingProvider: "gemini";
   embeddingModel: string;
@@ -897,14 +897,10 @@ async function checkStorage(): Promise<HealthCheck> {
 
 function checkChatConfig(): HealthCheck {
   const mercuryKey = process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
-  const metaKey = process.env.META_API_KEY;
   if (mercuryKey) {
     return { key: "chat", label: "AI chat", status: "ok", detail: `Mercury configured (model ${process.env.MERCURY_CHAT_MODEL || "mercury-2.5"}). Configuration check only — no live call, no cost.` };
   }
-  if (metaKey) {
-    return { key: "chat", label: "AI chat", status: "ok", detail: "Meta Llama API configured (model Llama-4-Maverick-17B-128E-Instruct-FP8). Configuration check only — no live call, no cost." };
-  }
-  return { key: "chat", label: "AI chat", status: "not_configured", detail: "No chat provider key set (MERCURY_API_KEY or META_API_KEY). Tutor, quiz, and recommendations will fail." };
+  return { key: "chat", label: "AI chat", status: "not_configured", detail: "MERCURY_API_KEY is not set. Tutor, quiz, and recommendations will fail." };
 }
 
 async function checkEmbeddings(): Promise<HealthCheck> {
@@ -949,9 +945,8 @@ async function checkJobs(): Promise<HealthCheck> {
 export async function getAdminSystemHealth(): Promise<AdminSystemHealth> {
   const embeddingProvider = "gemini" as const;
   const mercuryKey = process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
-  const metaKey = process.env.META_API_KEY;
-  const chatProvider = mercuryKey ? ("mercury" as const) : metaKey ? ("meta" as const) : ("none" as const);
-  const chatModel = chatProvider === "mercury" ? process.env.MERCURY_CHAT_MODEL || "mercury-2.5" : chatProvider === "meta" ? "Llama-4-Maverick-17B-128E-Instruct-FP8" : null;
+  const chatProvider = mercuryKey ? ("mercury" as const) : ("none" as const);
+  const chatModel = chatProvider === "mercury" ? process.env.MERCURY_CHAT_MODEL || "mercury-2.5" : null;
 
   const [database, storage, embeddings, jobs] = await Promise.all([
     checkDatabase(),

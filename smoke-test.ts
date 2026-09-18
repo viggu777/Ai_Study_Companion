@@ -1,18 +1,17 @@
 import { loadEnvConfig } from '@next/env';
 loadEnvConfig(process.cwd());
 
-import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME, ACTIVE_CHAT_PROVIDER, ACTIVE_EMBEDDING_PROVIDER, MERCURY_BASE_URL_VALUE, META_BASE_URL_VALUE } from './lib/ai/AIService';
+import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME, ACTIVE_CHAT_PROVIDER, ACTIVE_EMBEDDING_PROVIDER, MERCURY_BASE_URL_VALUE } from './lib/ai/AIService';
 
 async function smokeTest() {
-  const chatBase = ACTIVE_CHAT_PROVIDER === "mercury" ? MERCURY_BASE_URL_VALUE : META_BASE_URL_VALUE;
   console.log('Starting smoke test for split AIService (Mercury chat + Gemini embeddings)...\n');
-  console.log(`  Chat provider: ${ACTIVE_CHAT_PROVIDER} — model ${CHAT_MODEL_NAME} @ ${chatBase}`);
+  console.log(`  Chat provider: ${ACTIVE_CHAT_PROVIDER} — model ${CHAT_MODEL_NAME} @ ${MERCURY_BASE_URL_VALUE}`);
   console.log(`  Embedding: ${ACTIVE_EMBEDDING_PROVIDER} ${EMBEDDING_MODEL_NAME} (${EMBEDDING_DIM} dims)`);
   console.log(`  MERCURY_API_KEY set: ${!!(process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY)}`);
   console.log(`  GEMINI_API_KEY set: ${!!process.env.GEMINI_API_KEY}\n`);
   
   try {
-    console.log('1. Testing generateText (chat provider)...');
+    console.log('1. Testing generateText (Mercury)...');
     try {
       const textResult = await aiService.generateText({
         systemPrompt: 'You are a helpful assistant.',
@@ -27,19 +26,17 @@ async function smokeTest() {
       const lower = msg.toLowerCase();
       if (
         msg.includes('MERCURY_API_KEY') ||
-        msg.includes('META_API_KEY') ||
-        msg.includes('your-meta') ||
         msg.includes('Authentication') ||
         msg.includes('Invalid API Key') ||
         msg.includes('invalid_api_key') ||
         lower.includes('401')
       ) {
-        console.log('⚠ generateText skipped/failed (expected without real chat API key):', msg.slice(0, 500));
-        console.log('  → Correctly routed to chat provider — 401 proves endpoint exists (not 404).');
+        console.log('⚠ generateText skipped/failed (expected without real Mercury API key):', msg.slice(0, 500));
+        console.log('  → Correctly routed to Mercury — 401 proves endpoint exists (not 404).');
       } else throw e;
     }
 
-    console.log('\n2. Testing generateStructured (chat provider, JSON mode)...');
+    console.log('\n2. Testing generateStructured (Mercury, JSON mode)...');
     try {
       const structuredResult = await aiService.generateStructured({
         systemPrompt: 'You are a helpful assistant that returns JSON.',
@@ -54,15 +51,13 @@ async function smokeTest() {
       const lower = msg.toLowerCase();
       if (
         msg.includes('MERCURY_API_KEY') ||
-        msg.includes('META_API_KEY') ||
-        msg.includes('your-meta') ||
         msg.includes('Authentication') ||
         msg.includes('Invalid API Key') ||
         msg.includes('invalid_api_key') ||
         lower.includes('401')
       ) {
-        console.log('⚠ generateStructured skipped/failed (expected without real chat API key):', msg.slice(0, 500));
-        console.log('  → Correctly routed to chat provider — JSON mode via response_format: json_object (validated server-side).');
+        console.log('⚠ generateStructured skipped/failed (expected without real Mercury API key):', msg.slice(0, 500));
+        console.log('  → Correctly routed to Mercury — JSON mode via response_format: json_object (validated server-side).');
       } else throw e;
     }
 
@@ -91,7 +86,7 @@ async function smokeTest() {
       } else throw e;
     }
 
-    console.log('\n4. Testing evaluate (chat provider)...');
+    console.log('\n4. Testing evaluate (Mercury)...');
     try {
       const evaluateResult = await aiService.evaluate({
         systemPrompt: 'You are an evaluator.',
@@ -105,19 +100,17 @@ async function smokeTest() {
       const lower = msg.toLowerCase();
       if (
         msg.includes('MERCURY_API_KEY') ||
-        msg.includes('META_API_KEY') ||
-        msg.includes('your-meta') ||
         msg.includes('Authentication') ||
         msg.includes('Invalid API Key') ||
         msg.includes('invalid_api_key') ||
         lower.includes('401')
       ) {
-        console.log('⚠ evaluate skipped/failed (expected without real chat API key):', msg.slice(0, 500));
+        console.log('⚠ evaluate skipped/failed (expected without real Mercury API key):', msg.slice(0, 500));
       } else throw e;
     }
 
     console.log('\n✅ Smoke test wiring complete — check above for real provider calls. If keys were dummy, failures are expected and prove correct provider routing (Mercury vs Gemini).');
-    console.log('   To verify real results: set real META_API_KEY and GEMINI_API_KEY in .env.local and re-run: npx tsx smoke-test.ts');
+    console.log('   To verify real results: set real MERCURY_API_KEY and GEMINI_API_KEY in .env.local and re-run: npx tsx smoke-test.ts');
   } catch (error) {
     console.error('\n❌ Smoke test failed:', error);
     process.exit(1);

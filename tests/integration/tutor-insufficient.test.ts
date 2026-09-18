@@ -37,7 +37,7 @@ describe("Tutor insufficient-evidence path", () => {
     });
     vi.doMock("@/lib/ai/AIService", () => ({
       aiService: { generateStructured: mockGenerateStructured },
-      CHAT_MODEL_NAME: "Llama-4-Maverick-17B-128E-Instruct-FP8",
+      CHAT_MODEL_NAME: "mercury-2.5",
     }));
 
     // Simulate the tutor service logic for insufficient path:

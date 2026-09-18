@@ -6,7 +6,7 @@ Organize learning into **Spaces → Projects**, upload **Materials** (PDFs), lea
 get tested via an **Adaptive Quiz** (MCQ + open-ended), and watch the system track
 **Concept Mastery** over time to produce **Growth Analysis** and actionable
 **Recommendations**. Every AI feature either produces evidence or acts on evidence —
-the closed learning loop in `docs/architecture.md`.
+the closed learning loop.
 
 **Live deployment:** https://ai-study-companion-three-inky.vercel.app/
 (Vercel + Supabase + Inngest Cloud — see Deployment information below).
@@ -25,7 +25,7 @@ the closed learning loop in `docs/architecture.md`.
    cp .env.example .env.local
    ```
 
-   Required env vars (see `.env.example`, full list in `docs/architecture.md` §17):
+   Required env vars (see `.env.example`):
 
    | Var | Used for |
    | --- | -------- |
@@ -33,11 +33,9 @@ the closed learning loop in `docs/architecture.md`.
    | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (client + server) |
    | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (browser session) |
    | `SUPABASE_SERVICE_ROLE_KEY` | Service role — server/admin paths only, never the browser |
-    | `META_API_KEY` | Meta's Llama API for chat / structured output / evaluation — production path, used when `MERCURY_API_KEY` is unset (model `Llama-4-Maverick-17B-128E-Instruct-FP8`) |
-    | `MERCURY_API_KEY` | Mercury (Inception Labs) for chat / structured output / evaluation — testing default (model `mercury-2.5`); unset it to switch back to Meta |
+    | `MERCURY_API_KEY` | Mercury (Inception Labs) for chat / structured output / evaluation (model `mercury-2.5`) |
     | `MERCURY_API_BASE_URL` | Optional, defaults to `https://api.inceptionlabs.ai/v1` |
     | `MERCURY_CHAT_MODEL` | Optional, defaults to `mercury-2.5` |
-   | `META_API_BASE_URL` | Optional, defaults to `https://api.llama.com/compat/v1` |
     | `GEMINI_API_KEY` | Google Gemini Embeddings API key (server-only, never client) — free tier at https://aistudio.google.com/apikey. `chunks.embedding` is `VECTOR(768)` per `db/schema/006_embeddings_gemini_768.sql`. |
     | `GEMINI_EMBEDDING_MODEL` | Optional, defaults to `gemini-embedding-001` |
     | `GEMINI_EMBEDDING_DIM` | Optional, defaults to `768` (must match `chunks.embedding`) |
@@ -75,8 +73,7 @@ npm run typecheck
 ```
 
 Results feed `/admin/ai-evaluation`, which shows run metadata plus run-over-run
-regression tracking (`IMPROVED` / `REGRESSED` / `UNCHANGED` / `BASELINE`); the
-curated report is `docs/evaluation.md`.
+regression tracking (`IMPROVED` / `REGRESSED` / `UNCHANGED` / `BASELINE`).
 
 ## Project map
 
@@ -88,8 +85,6 @@ curated report is `docs/evaluation.md`.
 - `components/Sidebar.tsx` — shared sidebar shell (workspace / project / admin sections, mobile drawer).
 - `services/` + `lib/` + `ai/` — service layer, RAG/Auth/DB helpers, and prompt+schema definitions per feature.
 - `db/schema/` — SQL migrations + `match_chunks` pgvector RPC.
-- `docs/` — `architecture.md` (+ `.pdf`), `evaluation.md`, `ai-tools-usage.md` (+`.pdf`),
-  `limitations.md`, `future-improvements.md`, `development-prompts/` (per-phase log), `build-prompts.md`.
 
 ## Architecture summary
 
@@ -100,10 +95,9 @@ served at `/api/inngest`) with a direct-processing fallback for local dev.
 Data/Auth/Storage live in one Supabase project (Postgres + pgvector + Auth +
 private `materials` bucket). Retrieval is pgvector `match_chunks` scoped by
 `project_id` with `RELEVANCE_THRESHOLD=0.25`. Runtime AI goes through
-`lib/ai/AIService.ts`: chat/structured defaults to Mercury `mercury-2.5` with
-Meta `Llama-4-Maverick-17B-128E-Instruct-FP8` fallback; embeddings use Google
+`lib/ai/AIService.ts`: chat/structured/evaluation use Mercury `mercury-2.5`;
+ embeddings use Google
 Gemini `gemini-embedding-001` (768 dims, `chunks.embedding VECTOR(768)`).
-Full spec: `docs/architecture.md` (single source of truth).
 
 ## Embedding-service setup
 
@@ -118,13 +112,12 @@ Apply `db/schema/006_embeddings_gemini_768.sql` so `chunks.embedding` stays
 `VECTOR(768)`. Old bge-small (384d) / nomic (768d) rows are purged by the
 migration — press Retry on FAILED materials or run
 `npx tsx scripts/reindex-gemini-embeddings.ts` to re-embed.
-Legacy local Docker setup kept in `embeddings/README.md` for reference only.
 
 ## Configuration examples
 
 Copy `.env.example` to `.env.local` — it lists every required variable name
 with empty values and inline comments (never commit real secrets; `.env.local`
-is gitignored). Canonical key list lives in `docs/architecture.md` §17.
+is gitignored). `.env.example` is the canonical key list.
 
 ## Deployment information
 
@@ -137,9 +130,7 @@ in Vercel + Inngest, run migrations `001`→`010` via `npm run migrate`
 (or Supabase SQL Editor in order),
 ensure the private `materials` bucket exists, sync `/api/inngest` in Inngest
 Cloud, then smoke-test the full loop on the live URL (signup → space/project
-→ PDF → READY → Tutor → quiz → mastery/growth/recommendations). Full
-checklist: `docs/development-prompts/18-deployment.md`; env reference:
-`docs/architecture.md` §17.
+→ PDF → READY → Tutor → quiz → mastery/growth/recommendations).
 
 Production hardening already shipped (see `git log`): inline material
 processing fallback + `maxDuration=60` so Vercel serverless never leaves
@@ -148,8 +139,7 @@ processes inline, Gemini 768-d embeddings with purge + reindex.
 
 ## Known limitations
 
-Prototype scope (2–3 days) — honest short list, full detail in
-`docs/limitations.md`, roadmap in `docs/future-improvements.md`:
+Prototype scope (2–3 days) — honest short list:
 
 - Mastery is a simple `0.7/0.3` weighted average; growth uses a fixed ±5
   threshold — explainable, not a full learning-science model.

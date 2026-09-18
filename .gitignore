@@ -14,3 +14,6 @@ tests/eval/history/
 # Tesseract OCR language data (downloaded at runtime to /tmp on Vercel;
 # never commit — local test runs may drop *.traineddata in cwd)
 *.traineddata
+# Local-only dev docs (design notes, prompt logs, internal reports) —
+# kept on disk in extra-docs/ but never pushed to GitHub
+/extra-docs/

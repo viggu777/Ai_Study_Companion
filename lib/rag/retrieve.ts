@@ -28,7 +28,7 @@ export const DEFAULT_TOP_K = 5;
  * Keyed by normalized query hash + embedding model/dimension so a model
  * change never reuses stale vectors. TTL ~10 min, bounded size.
  * Per-instance only (same caveat as the in-memory rate limiter).
- * Streaming stays deferred per docs/limitations.md (regression risk).
+  * Streaming stays deferred (regression risk — see local-only extra-docs/).
  */
 import { createHash } from "node:crypto";
 import { getActiveEmbeddingInfo } from "@/lib/ai/AIService";

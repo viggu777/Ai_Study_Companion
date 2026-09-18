@@ -129,11 +129,16 @@ export default async function AdminAiEvaluationPage() {
 
   const { current, previous, rows, source, historyCount, error } = loadEvaluationRuns();
 
-  // Also try to read docs/evaluation.md excerpt if no JSON
+  // Also try to read the evaluation report excerpt if no JSON (local-only
+  // extra-docs/, gitignored — legacy docs/ path kept as fallback).
   let mdExcerpt: string | null = null;
   try {
-    const mdPath = path.join(process.cwd(), "docs", "evaluation.md");
-    if (fs.existsSync(mdPath) && !current) {
+    const candidates = [
+      path.join(process.cwd(), "extra-docs", "docs", "evaluation.md"),
+      path.join(process.cwd(), "docs", "evaluation.md"),
+    ];
+    const mdPath = candidates.find((p) => fs.existsSync(p));
+    if (mdPath && !current) {
       const md = fs.readFileSync(mdPath, "utf-8");
       mdExcerpt = md.slice(0, 4000);
     }
@@ -170,11 +175,11 @@ export default async function AdminAiEvaluationPage() {
           </p>
           {mdExcerpt ? (
             <div className="mt-6">
-              <h3 className="text-xs font-semibold text-stone-700 uppercase tracking-wider mb-2">docs/evaluation.md excerpt</h3>
+              <h3 className="text-xs font-semibold text-stone-700 uppercase tracking-wider mb-2">Evaluation report excerpt</h3>
               <pre className="bg-stone-50 border border-stone-200 rounded-lg p-4 text-xs text-stone-700 whitespace-pre-wrap overflow-auto max-h-96">{mdExcerpt}</pre>
             </div>
           ) : (
-            <p className="text-xs text-stone-400 mt-4">No docs/evaluation.md excerpt available.</p>
+            <p className="text-xs text-stone-400 mt-4">No evaluation report excerpt available.</p>
           )}
         </div>
       ) : (
