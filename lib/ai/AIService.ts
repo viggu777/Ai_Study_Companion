@@ -180,6 +180,10 @@ export interface AIService {
   generateStructured<T>(options: GenerateStructuredOptions<T>): Promise<T>;
   generateEmbedding(options: GenerateEmbeddingOptions): Promise<number[][]>;
   evaluate(options: EvaluateOptions): Promise<string>;
+  generateTextWithUsage(options: GenerateTextOptions): Promise<{ text: string; usage: AiUsage }>;
+  generateStructuredWithUsage<T>(options: GenerateStructuredOptions<T>): Promise<{ data: T; usage: AiUsage }>;
+  generateEmbeddingWithUsage(options: GenerateEmbeddingOptions): Promise<{ vectors: number[][]; usage: AiUsage }>;
+  evaluateWithUsage(options: EvaluateOptions): Promise<{ text: string; usage: AiUsage }>;
 }
 
 function validateStructuredOutput<T>(data: unknown, schema: Record<string, unknown>): T {
@@ -194,6 +198,38 @@ function validateStructuredOutput<T>(data: unknown, schema: Record<string, unkno
     }
   }
   return data as T;
+}
+
+/** R28 — token usage threaded from provider responses into ai_operations. */
+export interface AiUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+function extractChatUsage(completion: { usage?: { prompt_tokens?: number; completion_tokens?: number } | null }): AiUsage {
+  return {
+    inputTokens: completion.usage?.prompt_tokens ?? 0,
+    outputTokens: completion.usage?.completion_tokens ?? 0,
+  };
+}
+
+/**
+ * Per-model $/1K-token pricing (input, output). Estimates only — keeps
+ * /admin/ai-usage cost cards real instead of null. Unknown models fall back
+ * to a conservative default. Embeddings priced per 1K input tokens.
+ */
+const MODEL_PRICING: Array<{ match: RegExp; inputPer1k: number; outputPer1k: number }> = [
+  { match: /mercury/i, inputPer1k: 0.0005, outputPer1k: 0.0015 },
+  { match: /llama-4-maverick/i, inputPer1k: 0.0004, outputPer1k: 0.0012 },
+  { match: /gemini-embedding/i, inputPer1k: 0.00002, outputPer1k: 0 },
+];
+
+export function estimateCost(model: string, usage: AiUsage): number {
+  const row = MODEL_PRICING.find((r) => r.match.test(model));
+  const inputPer1k = row?.inputPer1k ?? 0.0005;
+  const outputPer1k = row?.outputPer1k ?? 0.0015;
+  const cost = (usage.inputTokens / 1000) * inputPer1k + (usage.outputTokens / 1000) * outputPer1k;
+  return Math.round(cost * 1_000_000) / 1_000_000;
 }
 
 export const aiService: AIService = {
@@ -315,6 +351,42 @@ export const aiService: AIService = {
   },
 
   async evaluate({ systemPrompt, userPrompt, temperature = 0.1, maxTokens = 1500 }: EvaluateOptions) {
+    const { text } = await aiService.generateTextWithUsage({ systemPrompt, userPrompt, temperature, maxTokens });
+    return text;
+  },
+
+  async generateTextWithUsage({ systemPrompt, userPrompt, temperature = 0.7, maxTokens = 2000 }: GenerateTextOptions) {
+    const { client, model, useMaxCompletionTokens } = getChatClient();
+    let completion;
+    try {
+      completion = await client.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: useMaxCompletionTokens ? mercuryTemp(temperature) : temperature,
+        ...(useMaxCompletionTokens ? { max_completion_tokens: mercuryBudget(maxTokens) } : { max_tokens: maxTokens }),
+      });
+    } catch (e) {
+      throw new Error(friendlyAiErrorMessage(e));
+    }
+    const content = completion.choices[0]?.message?.content ?? "";
+    if (!content) {
+      throw new Error(
+        `Empty response from chat provider (finish_reason=${completion.choices[0]?.finish_reason ?? "unknown"} — likely output budget cut off by reasoning tokens)`
+      );
+    }
+    return { text: content, usage: extractChatUsage(completion) };
+  },
+
+  async generateStructuredWithUsage<T>({
+    systemPrompt,
+    userPrompt,
+    schema,
+    temperature = 0.3,
+    maxTokens = 2000,
+  }: GenerateStructuredOptions<T>) {
     const { client, model, useMaxCompletionTokens } = getChatClient();
     let completion;
     try {
@@ -328,11 +400,32 @@ export const aiService: AIService = {
         ...(useMaxCompletionTokens
           ? { max_completion_tokens: mercuryBudget(maxTokens), reasoning_effort: "low" as const }
           : { max_tokens: maxTokens }),
+        response_format: { type: "json_object" },
       });
     } catch (e) {
       throw new Error(friendlyAiErrorMessage(e));
     }
-    return completion.choices[0]?.message?.content ?? "";
+    const content = completion.choices[0]?.message?.content ?? "{}";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error("Failed to parse JSON from structured output");
+    }
+    return { data: validateStructuredOutput<T>(parsed, schema), usage: extractChatUsage(completion) };
+  },
+
+  async generateEmbeddingWithUsage({ input }: GenerateEmbeddingOptions) {
+    const vectors = await aiService.generateEmbedding({ input });
+    const inputs = Array.isArray(input) ? input : [input];
+    // Gemini embedContent does not return token counts — estimate ~1 token / 4 chars.
+    const inputTokens = inputs.reduce((sum, t) => sum + Math.max(1, Math.ceil(t.length / 4)), 0);
+    return { vectors, usage: { inputTokens, outputTokens: 0 } };
+  },
+
+  async evaluateWithUsage({ systemPrompt, userPrompt, temperature = 0.1, maxTokens = 1500 }: EvaluateOptions) {
+    const { text, usage } = await aiService.generateTextWithUsage({ systemPrompt, userPrompt, temperature, maxTokens });
+    return { text, usage };
   },
 };
 

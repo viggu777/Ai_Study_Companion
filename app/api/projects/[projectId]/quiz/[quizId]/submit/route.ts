@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { checkRateLimit, rateLimitedResponse } from "@/lib/security/rate-limit";
 import { submitAnswer } from "@/services/quiz.service";
+import { parseQuizSubmitBody } from "@/lib/validation/schemas";
 
 export async function POST(
   request: Request,
@@ -13,14 +14,11 @@ export async function POST(
     const rl = checkRateLimit(`quiz-submit:${userId}`, 60, 60_000);
     if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
     const body = await request.json().catch(() => ({}));
-    const questionId =
-      (body.questionId as unknown) ?? (body.question_id as unknown) ?? "";
-    const response = (body.response as unknown) ?? (body.answer as unknown) ?? "";
-    if (typeof questionId !== "string" || !questionId) {
-      return NextResponse.json({ error: "questionId is required" }, { status: 400 });
+    const parsed = parseQuizSubmitBody(body);
+    if (!parsed.ok || !parsed.data) {
+      return NextResponse.json({ error: parsed.error ?? "Invalid body" }, { status: 400 });
     }
-    if (!questionId) return NextResponse.json({ error: "questionId is required" }, { status: 400 });
-    if (!response || !String(response).trim()) return NextResponse.json({ error: "response is required" }, { status: 400 });
+    const { questionId, response } = parsed.data;
 
     const result = await submitAnswer(projectId, quizId, questionId, String(response));
     return NextResponse.json(result);

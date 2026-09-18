@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthError, requireUserId } from "@/lib/auth/getCurrentUser";
 import { updateRecommendationStatus } from "@/services/recommendation.service";
-
-const VALID_STATUSES = ["COMPLETED", "DISMISSED", "ACTIVE"] as const;
+import { parseRecommendationStatusBody } from "@/lib/validation/schemas";
 
 export async function PATCH(
   req: NextRequest,
@@ -11,19 +10,20 @@ export async function PATCH(
   try {
     await requireUserId();
     const { recommendationId } = await params;
-    let body: { status?: unknown };
+    let body: unknown;
     try {
-      body = (await req.json()) as typeof body;
+      body = await req.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const { status } = body;
-    if (!VALID_STATUSES.includes(status as (typeof VALID_STATUSES)[number])) {
-      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    const parsed = parseRecommendationStatusBody(body);
+    if (!parsed.ok || !parsed.data) {
+      return NextResponse.json({ error: parsed.error ?? "Invalid status" }, { status: 400 });
     }
+    const { status } = parsed.data;
     await updateRecommendationStatus(
       recommendationId,
-      status as "COMPLETED" | "DISMISSED" | "ACTIVE"
+      status
     );
     return NextResponse.json({ ok: true });
   } catch (e) {

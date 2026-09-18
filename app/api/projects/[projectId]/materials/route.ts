@@ -43,6 +43,7 @@ export async function POST(
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
+    if (msg.includes("quota exceeded")) return NextResponse.json({ error: msg }, { status: 429 });
     if (msg.includes("Only PDF or image") || msg.includes("Only PDF") || msg.includes("too large") || msg.includes("empty")) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }

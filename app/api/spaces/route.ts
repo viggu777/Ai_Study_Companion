@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { listSpaces, createSpace } from "@/services/project.service";
+import { parseSpaceBody } from "@/lib/validation/schemas";
 
 export async function GET() {
   try {
@@ -16,18 +17,17 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     await requireUserId();
-    let body: { name?: unknown; description?: unknown };
+    let body: unknown;
     try {
-      body = (await request.json()) as typeof body;
+      body = await request.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const name = typeof body.name === "string" ? body.name : "";
-    if (name.trim() === "") {
-      return NextResponse.json({ error: "Name is required" }, { status: 400 });
+    const parsed = parseSpaceBody(body);
+    if (!parsed.ok || !parsed.data) {
+      return NextResponse.json({ error: parsed.error ?? "Invalid body" }, { status: 400 });
     }
-    const description = typeof body.description === "string" ? body.description.trim() : undefined;
-    const space = await createSpace(name.trim(), description);
+    const space = await createSpace(parsed.data.name, parsed.data.description);
     return NextResponse.json(space, { status: 201 });
   } catch (e) {
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

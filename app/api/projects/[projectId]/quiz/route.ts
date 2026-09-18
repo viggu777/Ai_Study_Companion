@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUserId, isAuthError } from "@/lib/auth/getCurrentUser";
 import { checkRateLimit, rateLimitedResponse } from "@/lib/security/rate-limit";
 import { generateQuiz, listQuizzes } from "@/services/quiz.service";
+import { parseQuizGenerateBody } from "@/lib/validation/schemas";
 
 export async function GET(
   request: Request,
@@ -28,7 +29,11 @@ export async function POST(
     const userId = await requireUserId();
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
-    const count = typeof body.count === "number" ? body.count : undefined;
+    const parsed = parseQuizGenerateBody(body);
+    if (!parsed.ok) {
+      return NextResponse.json({ error: parsed.error ?? "Invalid body" }, { status: 400 });
+    }
+    const count = parsed.data?.count;
     // Quiz generation costs an LLM call — 5/min per user (double-clicks are
     // also absorbed by the idempotency guard in generateQuiz).
     const rl = checkRateLimit(`quiz-generate:${userId}`, 5, 60_000);

@@ -7,7 +7,7 @@
  */
 
 import { getDb } from "@/lib/db/supabase";
-import { aiService, EMBEDDING_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, EMBEDDING_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 
 /**
@@ -22,6 +22,51 @@ export const RELEVANCE_THRESHOLD = 0.25;
 
 /** Default number of chunks to return when caller doesn't specify K */
 export const DEFAULT_TOP_K = 5;
+
+/**
+ * R35 — in-memory query-embedding cache (prototype-safe).
+ * Keyed by normalized query hash + embedding model/dimension so a model
+ * change never reuses stale vectors. TTL ~10 min, bounded size.
+ * Per-instance only (same caveat as the in-memory rate limiter).
+ * Streaming stays deferred per docs/limitations.md (regression risk).
+ */
+import { createHash } from "node:crypto";
+import { getActiveEmbeddingInfo } from "@/lib/ai/AIService";
+
+const EMBEDDING_CACHE_TTL_MS = 10 * 60 * 1000;
+const EMBEDDING_CACHE_MAX = 200;
+const embeddingCache = new Map<string, { embedding: number[]; expires: number }>();
+
+export function buildEmbeddingCacheKey(query: string): string {
+  const info = getActiveEmbeddingInfo();
+  const norm = query.trim().toLowerCase().replace(/\s+/g, " ");
+  const h = createHash("sha256").update(norm).digest("hex");
+  return `${info.model}:${info.dimension}:${h}`;
+}
+
+export function getCachedQueryEmbedding(query: string): number[] | null {
+  const key = buildEmbeddingCacheKey(query);
+  const hit = embeddingCache.get(key);
+  if (!hit) return null;
+  if (Date.now() > hit.expires) {
+    embeddingCache.delete(key);
+    return null;
+  }
+  return hit.embedding;
+}
+
+export function setCachedQueryEmbedding(query: string, embedding: number[]): void {
+  const key = buildEmbeddingCacheKey(query);
+  if (embeddingCache.size >= EMBEDDING_CACHE_MAX) {
+    const oldest = embeddingCache.keys().next().value;
+    if (oldest) embeddingCache.delete(oldest);
+  }
+  embeddingCache.set(key, { embedding, expires: Date.now() + EMBEDDING_CACHE_TTL_MS });
+}
+
+export function clearEmbeddingCache(): void {
+  embeddingCache.clear();
+}
 
 export interface RetrievedChunk {
   id: string;
@@ -155,15 +200,20 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
   }
 
   // 2. Embed query via AIService — log as EMBEDDING feature (phase 15: exactly one ai_operations row per call, including failure)
+  // R28: thread usage + cost; R35: in-memory embedding cache for identical queries.
   let queryEmbedding: number[];
   {
     const requestId = crypto.randomUUID();
     const t0 = Date.now();
     let logged = false;
     try {
-      const embeddings = await aiService.generateEmbedding({ input: query.trim() });
+      const cached = getCachedQueryEmbedding(query.trim());
+      const { vectors: embeddings, usage } = cached
+        ? { vectors: [cached], usage: { inputTokens: 0, outputTokens: 0 } }
+        : await aiService.generateEmbeddingWithUsage({ input: query.trim() });
       const latencyMs = Date.now() - t0;
       queryEmbedding = embeddings[0];
+      if (!cached) setCachedQueryEmbedding(query.trim(), queryEmbedding);
       if (!queryEmbedding || queryEmbedding.length === 0) {
         await logAiOperation({
           userId,
@@ -186,6 +236,9 @@ export async function retrieve(params: RetrieveOptions): Promise<RetrieveResult>
         requestId,
         latencyMs,
         success: true,
+        tokensIn: usage.inputTokens,
+        tokensOut: usage.outputTokens,
+        estimatedCost: cached ? 0 : estimateCost(EMBEDDING_MODEL_NAME, usage),
       });
       logged = true;
     } catch (e) {

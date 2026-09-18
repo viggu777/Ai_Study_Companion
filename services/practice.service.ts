@@ -1,6 +1,6 @@
 import { getDb, getServiceDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import { inngest } from "@/lib/jobs/client";
 import {
@@ -799,14 +799,17 @@ export async function generatePracticeAssignment(
   let raw: unknown;
   let latencyMs = 0;
   let alreadyLogged = false;
+  let lastUsage = { inputTokens: 0, outputTokens: 0 };
   try {
-    raw = await aiService.generateStructured<unknown>({
+    const res = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: PRACTICE_GENERATION_SYSTEM_PROMPT,
       userPrompt,
       schema: PracticeGenerationSchema,
       temperature: 0.5,
       maxTokens: 3000,
     });
+    raw = res.data;
+    lastUsage = res.usage;
     latencyMs = Date.now() - start;
   } catch (e) {
     latencyMs = Date.now() - start;
@@ -823,16 +826,18 @@ export async function generatePracticeAssignment(
     const msg = e instanceof Error ? e.message : String(e);
     try {
       const retryStart = Date.now();
-      const retryRaw = await aiService.generateStructured<unknown>({
+      const retryRes = await aiService.generateStructuredWithUsage<unknown>({
         systemPrompt: PRACTICE_GENERATION_SYSTEM_PROMPT,
         userPrompt: userPrompt + "\n\nPrevious output failed validation: " + msg + " — fix the JSON exactly to match the schema.",
         schema: PracticeGenerationSchema,
         temperature: 0.4,
         maxTokens: 3000,
       });
+      const retryRaw = retryRes.data;
+      lastUsage = retryRes.usage;
       latencyMs = Date.now() - retryStart;
       validated = validatePracticeGenerationOutput(retryRaw, expectedIds);
-      await logAiOperation({ userId, projectId, feature: "PRACTICE_GENERATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true });
+      await logAiOperation({ userId, projectId, feature: "PRACTICE_GENERATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true, tokensIn: lastUsage.inputTokens, tokensOut: lastUsage.outputTokens, estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage) });
       alreadyLogged = true;
     } catch (retryErr) {
       const rMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -843,7 +848,7 @@ export async function generatePracticeAssignment(
   }
   if (validated && !alreadyLogged) {
     try {
-      await logAiOperation({ userId, projectId, feature: "PRACTICE_GENERATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true });
+      await logAiOperation({ userId, projectId, feature: "PRACTICE_GENERATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true, tokensIn: lastUsage.inputTokens, tokensOut: lastUsage.outputTokens, estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage) });
     } catch {
       // ignore
     }
@@ -1294,7 +1299,7 @@ export async function submitPracticeResponse(
     await db.from("practice_responses").update({ score: evaluation.score, evaluation }).eq("id", responseId);
   } else {
   try {
-    const raw = await aiService.generateStructured<unknown>({
+    const { data: raw, usage } = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: PRACTICE_EVALUATION_SYSTEM_PROMPT,
       userPrompt,
       schema: PracticeEvaluationSchema,
@@ -1307,17 +1312,17 @@ export async function submitPracticeResponse(
     } catch (ve) {
       // One validation retry with hint (same pattern as generation).
       const msg = ve instanceof Error ? ve.message : String(ve);
-      const retryRaw = await aiService.generateStructured<unknown>({
+      const retryRes = await aiService.generateStructuredWithUsage<unknown>({
         systemPrompt: PRACTICE_EVALUATION_SYSTEM_PROMPT,
         userPrompt: userPrompt + "\n\nPrevious output failed validation: " + msg + " — fix the JSON exactly to match the schema.",
         schema: PracticeEvaluationSchema,
         temperature: 0.2,
         maxTokens: 1500,
       });
-      evaluation = validatePracticeEvaluationOutput(retryRaw);
+      evaluation = validatePracticeEvaluationOutput(retryRes.data);
       void latencyMs;
     }
-    await logAiOperation({ userId, projectId, feature: "PRACTICE_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs: Date.now() - start, success: true });
+    await logAiOperation({ userId, projectId, feature: "PRACTICE_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs: Date.now() - start, success: true, tokensIn: usage.inputTokens, tokensOut: usage.outputTokens, estimatedCost: estimateCost(CHAT_MODEL_NAME, usage) });
     await db.from("practice_responses").update({ score: evaluation.score, evaluation }).eq("id", responseId);
   } catch (e) {
     const latencyMs = Date.now() - start;
@@ -1502,14 +1507,13 @@ async function tryCompletePracticeIfNeeded(
     await inngest.send({ name: "practice/completed", data: { assignmentId, projectId, userId, spaceId } });
   } catch (e) {
     console.error("Inngest practice/completed failed, fallback direct recommendation:", e);
-    setTimeout(async () => {
-      try {
-        const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-        await generateRecommendationForProject({ projectId, userId, spaceId });
-      } catch (err) {
-        console.error("Fallback recommendation after practice failed:", err);
-      }
-    }, 100);
+    // Serverless-safe inline fallback (setTimeout never fires on Vercel).
+    try {
+      const { generateRecommendationForProject } = await import("@/services/recommendation.service");
+      await generateRecommendationForProject({ projectId, userId, spaceId });
+    } catch (err) {
+      console.error("Fallback recommendation after practice failed:", err);
+    }
   }
 
   return { completedNow: true, status: "completed" };

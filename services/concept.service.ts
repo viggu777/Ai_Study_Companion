@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import {
   SUBCONCEPT_SYSTEM_PROMPT,
@@ -127,7 +127,7 @@ export async function generateSubConcepts(projectId: string, conceptId: string):
   const requestId = crypto.randomUUID();
   const start = Date.now();
   try {
-    const raw = await aiService.generateStructured<unknown>({
+    const { data: raw, usage } = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: SUBCONCEPT_SYSTEM_PROMPT,
       userPrompt,
       schema: SubConceptSchema,
@@ -143,6 +143,9 @@ export async function generateSubConcepts(projectId: string, conceptId: string):
       requestId,
       latencyMs: Date.now() - start,
       success: true,
+      tokensIn: usage.inputTokens,
+      tokensOut: usage.outputTokens,
+      estimatedCost: estimateCost(CHAT_MODEL_NAME, usage),
     });
     return validated;
   } catch (e) {

@@ -3,11 +3,15 @@ import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
 import { inngest } from "@/lib/jobs/client";
 import { buildStoragePath, downloadPdf, uploadPdf } from "@/lib/storage/materialStorage";
 import { chunkPlainText, chunkText } from "@/lib/rag/chunker";
-import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, EMBEDDING_DIM, EMBEDDING_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import { extractImageText, isImageFile, normalizeImageMime } from "@/lib/ocr/imageOcr";
 import { extractScannedPdfText, joinSegmentsForPrompt } from "@/lib/ocr/scannedPdfOcr";
 import { createHash } from "node:crypto";
+import {
+  MAX_MATERIALS_PER_USER,
+  MAX_STORAGE_BYTES_PER_USER,
+} from "@/lib/validation/schemas";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB (PDFs and images)
 
@@ -100,6 +104,43 @@ export async function uploadMaterial(
   }
   if (file.size === 0) throw new Error("File is empty");
 
+  // R33 per-user quota: count + storage-byte cap (over-quota → 429-style error).
+  // file_size column ships in 011_material_file_size.sql — pre-migration DBs
+  // fall back to count-only so upload still works.
+  try {
+    const { data: existing, error: quotaErr } = await db
+      .from("materials")
+      .select("id, file_size")
+      .eq("user_id", userId);
+    if (!quotaErr && existing) {
+      const rows = existing as Array<{ id: string; file_size?: number | null }>;
+      if (rows.length >= MAX_MATERIALS_PER_USER) {
+        const e = new Error(
+          `Upload quota exceeded — max ${MAX_MATERIALS_PER_USER} materials per user`
+        );
+        (e as Error & { status?: number }).status = 429;
+        throw e;
+      }
+      const hasSizeCol = rows.length === 0 || rows.some((r) => "file_size" in r);
+      if (hasSizeCol) {
+        const used = rows.reduce(
+          (sum, r) => sum + (typeof r.file_size === "number" ? r.file_size : 0),
+          0
+        );
+        if (used + file.size > MAX_STORAGE_BYTES_PER_USER) {
+          const e = new Error(
+            `Storage quota exceeded — max ${Math.round(MAX_STORAGE_BYTES_PER_USER / 1024 / 1024)} MB per user`
+          );
+          (e as Error & { status?: number }).status = 429;
+          throw e;
+        }
+      }
+    }
+  } catch (e) {
+    if ((e as Error & { status?: number }).status === 429) throw e;
+    // quota lookup failed (e.g. RLS/column) — proceed without quota block.
+  }
+
   const buffer = Buffer.from(await file.arrayBuffer());
   const fileHash = computeFileHash(buffer);
 
@@ -149,6 +190,7 @@ export async function uploadMaterial(
         mime_type: kind.mime,
         status: "QUEUED",
         file_hash: fileHash,
+        file_size: file.size,
       })
       .select()
       .single();
@@ -156,8 +198,8 @@ export async function uploadMaterial(
       material = withHash.data as { id: string };
     } else {
       const msg = withHash.error?.message ?? "";
-      // Pre-010 DBs have no file_hash column — retry without it.
-      if (msg.includes("file_hash")) {
+      // Pre-010/011 DBs have no file_hash/file_size column — retry without them.
+      if (msg.includes("file_hash") || msg.includes("file_size")) {
         const fallback = await db
           .from("materials")
           .insert({
@@ -484,7 +526,7 @@ export async function processMaterial(materialId: string) {
       const requestId = crypto.randomUUID();
       const t0 = Date.now();
       try {
-        const embs = await aiService.generateEmbedding({ input: batch });
+        const { vectors: embs, usage } = await aiService.generateEmbeddingWithUsage({ input: batch });
         const latencyMs = Date.now() - t0;
         await logAiOperation({
           userId,
@@ -494,6 +536,9 @@ export async function processMaterial(materialId: string) {
           requestId,
           latencyMs,
           success: true,
+          tokensIn: usage.inputTokens,
+          tokensOut: usage.outputTokens,
+          estimatedCost: estimateCost(EMBEDDING_MODEL_NAME, usage),
         });
         embeddings.push(...embs);
       } catch (e) {
@@ -550,7 +595,7 @@ export async function processMaterial(materialId: string) {
       const requestId = crypto.randomUUID();
       const t0 = Date.now();
       try {
-        const result = await aiService.generateStructured<{ concepts: { name: string; description: string }[] }>({
+        const { data: result, usage } = await aiService.generateStructuredWithUsage<{ concepts: { name: string; description: string }[] }>({
           systemPrompt:
             "You are a concept extractor. From the document text, extract up to 8 distinct key concepts as { name, description }. Names should be concise (2-5 words), descriptions one sentence. Return JSON { concepts: [...] } only, no extra keys.",
           userPrompt: `Document (first 8000 chars):\n${conceptSourceText}\n\nReturn JSON with key "concepts".`,
@@ -567,6 +612,9 @@ export async function processMaterial(materialId: string) {
           requestId,
           latencyMs,
           success: true,
+          tokensIn: usage.inputTokens,
+          tokensOut: usage.outputTokens,
+          estimatedCost: estimateCost(CHAT_MODEL_NAME, usage),
         });
         const raw = (result as unknown as { concepts: unknown }).concepts;
         if (Array.isArray(raw)) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUserId, isAuthError, isNotFoundError } from "@/lib/auth/getCurrentUser";
 import { listProjects, createProject } from "@/services/project.service";
+import { parseProjectBody } from "@/lib/validation/schemas";
 
 export async function GET(
   request: Request,
@@ -25,19 +26,17 @@ export async function POST(
   try {
     await requireUserId();
     const { spaceId } = await params;
-    let body: { name?: unknown; description?: unknown; learning_goal?: unknown };
+    let body: unknown;
     try {
-      body = (await request.json()) as typeof body;
+      body = await request.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const name = typeof body.name === "string" ? body.name : "";
-    if (name.trim() === "") {
-      return NextResponse.json({ error: "Name is required" }, { status: 400 });
+    const parsed = parseProjectBody(body);
+    if (!parsed.ok || !parsed.data) {
+      return NextResponse.json({ error: parsed.error ?? "Invalid body" }, { status: 400 });
     }
-    const description = typeof body.description === "string" ? body.description.trim() : undefined;
-    const learningGoal = typeof body.learning_goal === "string" ? body.learning_goal.trim() : undefined;
-    const project = await createProject(spaceId, name.trim(), description, learningGoal);
+    const project = await createProject(spaceId, parsed.data.name, parsed.data.description, parsed.data.learning_goal);
     return NextResponse.json(project, { status: 201 });
   } catch (e) {
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

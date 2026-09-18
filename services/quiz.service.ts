@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import { inngest } from "@/lib/jobs/client";
 import {
@@ -379,14 +379,17 @@ export async function generateQuiz(
   let raw: unknown;
   let latencyMs = 0;
   let alreadyLogged = false;
+  let lastUsage = { inputTokens: 0, outputTokens: 0 };
   try {
-    raw = await aiService.generateStructured<unknown>({
+    const res = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: QUIZ_SYSTEM_PROMPT,
       userPrompt,
       schema: QuizGenerationSchema,
       temperature: 0.4,
       maxTokens: 2500,
     });
+    raw = res.data;
+    lastUsage = res.usage;
     latencyMs = Date.now() - start;
   } catch (e) {
     latencyMs = Date.now() - start;
@@ -417,13 +420,15 @@ export async function generateQuiz(
     // Retry once
     try {
       const retryStart = Date.now();
-      const retryRaw = await aiService.generateStructured<unknown>({
+      const retryRes = await aiService.generateStructuredWithUsage<unknown>({
         systemPrompt: QUIZ_SYSTEM_PROMPT,
         userPrompt: userPrompt + "\n\nPrevious output failed validation: " + msg + " — fix the JSON exactly to match the schema.",
         schema: QuizGenerationSchema,
         temperature: 0.3,
         maxTokens: 2500,
       });
+      const retryRaw = retryRes.data;
+      lastUsage = retryRes.usage;
       latencyMs = Date.now() - retryStart;
       validated = validateQuizOutput(retryRaw, expectedIds);
       // Log retry success as success
@@ -435,6 +440,9 @@ export async function generateQuiz(
         requestId,
         latencyMs,
         success: true,
+        tokensIn: lastUsage.inputTokens,
+        tokensOut: lastUsage.outputTokens,
+        estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage),
       });
       alreadyLogged = true;
     } catch (retryErr) {
@@ -498,6 +506,9 @@ export async function generateQuiz(
         requestId,
         latencyMs,
         success: true,
+        tokensIn: lastUsage.inputTokens,
+        tokensOut: lastUsage.outputTokens,
+        estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage),
       });
       alreadyLogged = true;
     } catch {
@@ -846,7 +857,7 @@ export async function submitAnswer(
     const requestId = crypto.randomUUID();
     const start = Date.now();
     try {
-      const raw = await aiService.generateStructured<unknown>({
+      const { data: raw, usage } = await aiService.generateStructuredWithUsage<unknown>({
         systemPrompt: ASSESSMENT_SYSTEM_PROMPT,
         userPrompt,
         schema: AssessmentSchema,
@@ -857,7 +868,7 @@ export async function submitAnswer(
       evaluation = validateAssessmentOutput(raw);
       score = evaluation.score;
       isCorrect = score >= 60;
-      await logAiOperation({ userId, projectId, feature: "OPEN_ENDED_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true });
+      await logAiOperation({ userId, projectId, feature: "OPEN_ENDED_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true, tokensIn: usage.inputTokens, tokensOut: usage.outputTokens, estimatedCost: estimateCost(CHAT_MODEL_NAME, usage) });
       await db.from("answers").update({ is_correct: isCorrect, score, evaluation }).eq("id", answerId);
     } catch (e) {
       const latencyMs = Date.now() - start;
@@ -906,6 +917,17 @@ export async function submitAnswer(
   }
 
   await emitLearningEvent({ userId, spaceId, projectId, eventType: "QUESTION_ANSWERED", entityType: "answer", entityId: answerRow.id, metadata: { question_id: questionId, quiz_id: quizId, is_correct: isCorrect, score } });
+
+  // R22: ASSESSMENT_COMPLETED was listed in the admin filter + architecture
+  // catalog but never emitted. Emit it for graded open-ended answers so the
+  // filter reflects real data (MCQ answers are covered by QUESTION_ANSWERED).
+  if (qType !== "MCQ") {
+    try {
+      await emitLearningEvent({ userId, spaceId, projectId, eventType: "ASSESSMENT_COMPLETED", entityType: "answer", entityId: answerRow.id, metadata: { question_id: questionId, quiz_id: quizId, score } });
+    } catch (e) {
+      console.warn("ASSESSMENT_COMPLETED emit failed (non-blocking):", e);
+    }
+  }
 
   const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
 
@@ -960,27 +982,28 @@ async function tryCompleteQuizIfNeeded(projectId: string, quizId: string, userId
     if (updErr) console.warn("Quiz complete update error (may be race):", updErr);
 
     // Trigger mastery update workflow (Inngest step function chained after QUIZ_COMPLETED)
+    // On Vercel serverless a setTimeout fallback never runs after the response
+    // is sent (function frozen). So on send failure, process inline within this
+    // request — same pattern as services/material.service.ts:237.
     try {
       await inngest.send({ name: "quiz/completed", data: { quizId, projectId, userId, spaceId } });
     } catch (e) {
       console.error("Inngest send quiz/completed failed, fallback to direct mastery update:", e);
-      setTimeout(async () => {
+      try {
+        const { updateMasteryForQuiz } = await import("@/services/mastery.service");
+        await updateMasteryForQuiz({ quizId, projectId, userId, spaceId });
+        // The Inngest mastery-update function would normally chain
+        // mastery/updated → recommendation-generate from here. Since Inngest
+        // is unreachable, chain directly so recommendations are not dropped.
         try {
-          const { updateMasteryForQuiz } = await import("@/services/mastery.service");
-          await updateMasteryForQuiz({ quizId, projectId, userId, spaceId });
-          // The Inngest mastery-update function would normally chain
-          // mastery/updated → recommendation-generate from here. Since Inngest
-          // is unreachable, chain directly so recommendations are not dropped.
-          try {
-            const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-            await generateRecommendationForProject({ projectId, userId, spaceId });
-          } catch (recErr) {
-            console.error("Fallback recommendation generation failed:", recErr);
-          }
-        } catch (err) {
-          console.error("Fallback mastery update failed:", err);
+          const { generateRecommendationForProject } = await import("@/services/recommendation.service");
+          await generateRecommendationForProject({ projectId, userId, spaceId });
+        } catch (recErr) {
+          console.error("Fallback recommendation generation failed:", recErr);
         }
-      }, 100);
+      } catch (err) {
+        console.error("Fallback mastery update failed:", err);
+      }
     }
 
     return { completedNow: true, status: "completed" };

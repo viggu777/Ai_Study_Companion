@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import {
   FLASHCARD_SYSTEM_PROMPT,
@@ -52,14 +52,17 @@ export async function generateFlashcards(
   const requestId = crypto.randomUUID();
   const start = Date.now();
   let raw: unknown;
+  let lastUsage = { inputTokens: 0, outputTokens: 0 };
   try {
-    raw = await aiService.generateStructured<unknown>({
+    const res = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: FLASHCARD_SYSTEM_PROMPT,
       userPrompt,
       schema: FlashcardGenerationSchema,
       temperature: 0.4,
       maxTokens: 2500,
     });
+    raw = res.data;
+    lastUsage = res.usage;
   } catch (e) {
     const latencyMs = Date.now() - start;
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -84,13 +87,15 @@ export async function generateFlashcards(
     // Retry once with validation feedback, same pattern as quiz generation.
     const msg = e instanceof Error ? e.message : String(e);
     try {
-      const retryRaw = await aiService.generateStructured<unknown>({
+      const retryRes = await aiService.generateStructuredWithUsage<unknown>({
         systemPrompt: FLASHCARD_SYSTEM_PROMPT,
         userPrompt: userPrompt + "\n\nPrevious output failed validation: " + msg + " — fix the JSON exactly to match the schema.",
         schema: FlashcardGenerationSchema,
         temperature: 0.3,
         maxTokens: 2500,
       });
+      const retryRaw = retryRes.data;
+      lastUsage = retryRes.usage;
       validated = validateFlashcardOutput(retryRaw, expectedIds);
     } catch (retryErr) {
       const rMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -116,6 +121,9 @@ export async function generateFlashcards(
     requestId,
     latencyMs: Date.now() - start,
     success: true,
+    tokensIn: lastUsage.inputTokens,
+    tokensOut: lastUsage.outputTokens,
+    estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage),
   });
 
   const nameById = new Map(selected.map((s) => [s.id, s.name]));

@@ -7,6 +7,8 @@ export default async function AdminJobsPage() {
   await requireAdmin();
 
   let recentEvents: Array<{ id: string; event_type: string; created_at: string; metadata: unknown }> = [];
+  let recentAiFailures: Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }> = [];
+  let failedMaterials: Array<{ id: string; filename: string; processing_error: string | null; created_at: string }> = [];
   let aiFailures = 0;
   let aiTotal = 0;
   let error: string | null = null;
@@ -15,6 +17,8 @@ export default async function AdminJobsPage() {
     recentEvents = health.recentEvents;
     aiTotal = health.aiTotal;
     aiFailures = health.aiFailures;
+    recentAiFailures = health.recentAiFailures;
+    failedMaterials = health.failedMaterials;
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -24,8 +28,8 @@ export default async function AdminJobsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Jobs</h1>
-        <p className="text-sm text-stone-500 mt-1">Recent Inngest job runs and their status (success/failure/retry counts). Detail lives in the Inngest dashboard.</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Jobs <span className="ml-2 inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 align-middle">signal-proxy</span></h1>
+        <p className="text-sm text-stone-500 mt-1">Signal-proxy over learning_events + ai_operations — tallies and recent failures inline. Full run history, retries, and step traces live in the Inngest dashboard.</p>
       </div>
 
       <div className="bg-stone-100 border border-stone-200 rounded-lg p-4 flex flex-wrap items-center gap-3">
@@ -103,8 +107,73 @@ export default async function AdminJobsPage() {
             </div>
           )}
           <p className="text-xs text-stone-400 px-4 py-3 border-t">
-            Full retry/success detail (attempt counts, step traces) lives in Inngest — this table is a lightweight proxy via learning_events + ai_operations (spec allows &quot;even if this just links out to the Inngest dashboard&quot;).
+            Signal-proxy: tallies learning_events + ai_operations. Full retry/success detail (attempt counts, step traces) lives in Inngest — this table is a lightweight proxy (spec allows &quot;even if this just links out to the Inngest dashboard&quot;).
           </p>
+        </div>
+      )}
+
+      {!error && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="bg-white rounded-lg shadow-card border border-stone-200 overflow-hidden">
+            <div className="px-4 py-2 bg-stone-50 text-xs text-stone-500 border-b">
+              Last-10 failed materials (status=FAILED)
+            </div>
+            {failedMaterials.length === 0 ? (
+              <div className="p-6 text-center text-sm text-stone-500">No failed materials — uploads are healthy.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-stone-200 text-sm">
+                  <thead className="bg-stone-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Time</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">File</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-200">
+                    {failedMaterials.map((m) => (
+                      <tr key={m.id} className="hover:bg-stone-50">
+                        <td className="px-3 py-1.5 text-xs text-stone-600 whitespace-nowrap">{new Date(m.created_at).toLocaleString()}</td>
+                        <td className="px-3 py-1.5 text-xs text-stone-800 max-w-[12rem] truncate" title={m.filename}>{m.filename}</td>
+                        <td className="px-3 py-1.5 text-xs text-stone-600 max-w-md truncate" title={m.processing_error ?? ""}>{m.processing_error ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="bg-white rounded-lg shadow-card border border-stone-200 overflow-hidden">
+            <div className="px-4 py-2 bg-stone-50 text-xs text-stone-500 border-b">
+              Last-10 failed AI operations (success=false)
+            </div>
+            {recentAiFailures.length === 0 ? (
+              <div className="p-6 text-center text-sm text-stone-500">No failed AI operations — providers are healthy.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-stone-200 text-sm">
+                  <thead className="bg-stone-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Time</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Feature</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-200">
+                    {recentAiFailures.map((f) => (
+                      <tr key={f.id} className="hover:bg-stone-50">
+                        <td className="px-3 py-1.5 text-xs text-stone-600 whitespace-nowrap">{new Date(f.created_at).toLocaleString()}</td>
+                        <td className="px-3 py-1.5">
+                          <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">{f.feature}</span>
+                        </td>
+                        <td className="px-3 py-1.5 text-xs text-stone-600 max-w-md truncate" title={f.error ?? ""}>{f.error ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

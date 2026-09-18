@@ -1,7 +1,7 @@
 import { getDb } from "@/lib/db/supabase";
 import { getCurrentUserId } from "@/lib/auth/getCurrentUser";
 import { retrieve } from "@/lib/rag/retrieve";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import {
   CONVERSATION_SUMMARY_MAX_CHARS,
@@ -209,7 +209,7 @@ export async function maybeRefreshConversationSummary(
     const start = Date.now();
     let summaryText: string;
     try {
-      const raw = await aiService.generateStructured<{ summary: string; keyTopics: string[] }>({
+      const { data: raw, usage } = await aiService.generateStructuredWithUsage<{ summary: string; keyTopics: string[] }>({
         systemPrompt: SUMMARY_SYSTEM_PROMPT,
         userPrompt: buildSummaryUserPrompt({ olderMessages: older, previousSummary }),
         schema: ConversationSummarySchema,
@@ -225,6 +225,9 @@ export async function maybeRefreshConversationSummary(
         requestId,
         latencyMs: Date.now() - start,
         success: true,
+        tokensIn: usage.inputTokens,
+        tokensOut: usage.outputTokens,
+        estimatedCost: estimateCost(CHAT_MODEL_NAME, usage),
       });
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -622,7 +625,7 @@ export async function askTutor(
   const start = Date.now();
   let tutorResponse: TutorResponse;
   try {
-    const raw = await aiService.generateStructured<TutorResponse>({
+    const { data: raw, usage } = await aiService.generateStructuredWithUsage<TutorResponse>({
       systemPrompt: TUTOR_SYSTEM_PROMPT,
       userPrompt,
       schema: TutorResponseSchema,
@@ -644,6 +647,9 @@ export async function askTutor(
       requestId,
       latencyMs,
       success: true,
+      tokensIn: usage.inputTokens,
+      tokensOut: usage.outputTokens,
+      estimatedCost: estimateCost(CHAT_MODEL_NAME, usage),
     });
   } catch (e) {
     const latencyMs = Date.now() - start;

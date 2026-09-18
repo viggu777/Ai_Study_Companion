@@ -1,5 +1,5 @@
 import { getDb, getServiceDb } from "@/lib/db/supabase";
-import { aiService, CHAT_MODEL_NAME } from "@/lib/ai/AIService";
+import { aiService, CHAT_MODEL_NAME, estimateCost } from "@/lib/ai/AIService";
 import { logAiOperation } from "@/lib/ai/observability";
 import {
   RECOMMENDATION_SYSTEM_PROMPT,
@@ -306,14 +306,17 @@ export async function generateRecommendationForProject(params: {
   const requestId = crypto.randomUUID();
   const t0 = Date.now();
   let raw: unknown;
+  let lastUsage = { inputTokens: 0, outputTokens: 0 };
   try {
-    raw = await aiService.generateStructured({
+    const res = await aiService.generateStructuredWithUsage({
       systemPrompt: RECOMMENDATION_SYSTEM_PROMPT,
       userPrompt,
       schema: RecommendationSchema,
       temperature: 0.4,
       maxTokens: 1200,
     });
+    raw = res.data;
+    lastUsage = res.usage;
   } catch (e) {
     const latency = Date.now() - t0;
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -350,15 +353,16 @@ export async function generateRecommendationForProject(params: {
     });
     // Retry once with correction hint per phase 09 pattern
     try {
-      const retry = await aiService.generateStructured({
+      const retry = await aiService.generateStructuredWithUsage({
         systemPrompt: RECOMMENDATION_SYSTEM_PROMPT,
         userPrompt: `${userPrompt}\n\nPrevious output failed validation: ${errMsg} — fix JSON to match schema exactly.`,
         schema: RecommendationSchema,
         temperature: 0.3,
         maxTokens: 1200,
       });
-      validated = validateRecommendationOutput(retry);
-      raw = retry;
+      validated = validateRecommendationOutput(retry.data);
+      lastUsage = retry.usage;
+      raw = retry.data;
     } catch (e2) {
       const e2Msg = e2 instanceof Error ? e2.message : String(e2);
       throw new Error(`Recommendation validation failed twice: ${e2Msg}`);
@@ -374,6 +378,9 @@ export async function generateRecommendationForProject(params: {
     requestId,
     latencyMs: latency,
     success: true,
+    tokensIn: lastUsage.inputTokens,
+    tokensOut: lastUsage.outputTokens,
+    estimatedCost: estimateCost(CHAT_MODEL_NAME, lastUsage),
   });
 
   // Persist ACTIVE

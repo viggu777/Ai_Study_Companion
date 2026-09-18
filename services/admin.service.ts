@@ -453,11 +453,15 @@ export interface AdminJobHealth {
   recentEvents: Array<{ id: string; event_type: string; created_at: string; metadata: unknown }>;
   aiTotal: number;
   aiFailures: number;
+  recentAiFailures: Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }>;
+  failedMaterials: Array<{ id: string; filename: string; processing_error: string | null; created_at: string }>;
 }
 
 /**
- * Job health proxy: recent job-tied learning_events + ai_operations failure tallies.
- * Caller must have passed requireAdmin(); uses service role.
+ * Job health signal-proxy: recent job-tied learning_events + ai_operations
+ * failure tallies + last-10 failures inline. Full run history (attempts,
+ * step traces) lives in the Inngest dashboard — this page is a proxy, not
+ * a run log. Caller must have passed requireAdmin(); uses service role.
  */
 export async function getAdminJobHealth(): Promise<AdminJobHealth> {
   const db = getServiceDb();
@@ -471,6 +475,8 @@ export async function getAdminJobHealth(): Promise<AdminJobHealth> {
 
   let aiTotal = 0;
   let aiFailures = 0;
+  let recentAiFailures: AdminJobHealth["recentAiFailures"] = [];
+  let failedMaterials: AdminJobHealth["failedMaterials"] = [];
   try {
     const { data: ops } = await db.from("ai_operations").select("success").order("created_at", { ascending: false }).limit(200);
     aiTotal = (ops ?? []).length;
@@ -478,11 +484,41 @@ export async function getAdminJobHealth(): Promise<AdminJobHealth> {
   } catch {
     // best-effort tally; events table above is the primary signal
   }
+  try {
+    const { data: aiFails } = await db
+      .from("ai_operations")
+      .select("id, feature, model, error, created_at")
+      .eq("success", false)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    recentAiFailures = ((aiFails ?? []) as Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }>).map((r) => ({
+      ...r,
+      error: r.error ? r.error.slice(0, 300) : null,
+    }));
+  } catch {
+    // best-effort
+  }
+  try {
+    const { data: matFails } = await db
+      .from("materials")
+      .select("id, filename, processing_error, created_at")
+      .eq("status", "FAILED")
+      .order("created_at", { ascending: false })
+      .limit(10);
+    failedMaterials = ((matFails ?? []) as Array<{ id: string; filename: string; processing_error: string | null; created_at: string }>).map((r) => ({
+      ...r,
+      processing_error: r.processing_error ? r.processing_error.slice(0, 300) : null,
+    }));
+  } catch {
+    // best-effort
+  }
 
   return {
     recentEvents: (data ?? []) as AdminJobHealth["recentEvents"],
     aiTotal,
     aiFailures,
+    recentAiFailures,
+    failedMaterials,
   };
 }
 
