@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/auth/admin";
+import Link from "next/link";
 import { listAdminActivity } from "@/services/admin.service";
 
 export const dynamic = "force-dynamic";
@@ -24,23 +25,24 @@ const EVENT_TYPES = [
 export default async function AdminActivityPage({
   searchParams,
 }: {
-  searchParams?: {
+  searchParams?: Promise<{
     userId?: string;
     spaceId?: string;
     projectId?: string;
     eventType?: string;
     from?: string;
     to?: string;
-  };
+  }>;
 }) {
   await requireAdmin();
 
-  const userId = searchParams?.userId?.trim() || undefined;
-  const spaceId = searchParams?.spaceId?.trim() || undefined;
-  const projectId = searchParams?.projectId?.trim() || undefined;
-  const eventType = searchParams?.eventType?.trim() || undefined;
-  const from = searchParams?.from?.trim() || undefined;
-  const to = searchParams?.to?.trim() || undefined;
+  const resolved = (await searchParams) ?? {};
+  const userId = resolved.userId?.trim() || undefined;
+  const spaceId = resolved.spaceId?.trim() || undefined;
+  const projectId = resolved.projectId?.trim() || undefined;
+  const eventType = resolved.eventType?.trim() || undefined;
+  const from = resolved.from?.trim() || undefined;
+  const to = resolved.to?.trim() || undefined;
 
   let events: Awaited<ReturnType<typeof listAdminActivity>> = [];
   let error: string | null = null;
@@ -93,9 +95,9 @@ export default async function AdminActivityPage({
           <button type="submit" className="px-4 py-1.5 bg-sky-600 text-white rounded-md text-sm font-medium hover:bg-sky-700">
             Apply filters
           </button>
-          <a href="/admin/activity" className="px-4 py-1.5 bg-stone-100 text-stone-700 rounded-md text-sm hover:bg-stone-200">
+          <Link href="/admin/activity" className="px-4 py-1.5 bg-stone-100 text-stone-700 rounded-md text-sm hover:bg-stone-200">
             Clear
-          </a>
+          </Link>
         </div>
       </form>
 

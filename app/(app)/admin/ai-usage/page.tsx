@@ -30,7 +30,7 @@ export default async function AdminAiUsagePage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-stone-900">AI Usage</h1>
         <p className="text-sm text-stone-500 mt-1">
-          Aggregated ai_operations — calls per feature, average latency, total estimated cost, error rate. Full table scans via service role (limit 1000, order by created_at desc).
+          Aggregated ai_operations — calls per feature, average latency, error rate. Full table scans via service role (limit 1000, order by created_at desc).
         </p>
       </div>
 
@@ -51,9 +51,9 @@ export default async function AdminAiUsagePage() {
           <div className="text-xs text-stone-400 mt-1">fails / total</div>
         </div>
         <div className="bg-white rounded-lg shadow-card border border-stone-200 p-5">
-          <div className="text-xs font-medium text-stone-500 uppercase tracking-wider">Est. total cost</div>
-          <div className="text-3xl font-bold text-stone-900 mt-1">{usage.totalCost !== null ? `$${usage.totalCost}` : "—"}</div>
-          <div className="text-xs text-stone-400 mt-1">sum(estimated_cost)</div>
+          <div className="text-xs font-medium text-stone-500 uppercase tracking-wider">Features tracked</div>
+          <div className="text-3xl font-bold text-stone-900 mt-1">{Object.keys(usage.perFeature).length}</div>
+          <div className="text-xs text-stone-400 mt-1">distinct ai_operations features</div>
         </div>
       </div>
 

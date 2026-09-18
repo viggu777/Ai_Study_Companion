@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export default async function AdminJobsPage() {
   await requireAdmin();
 
-  let recentEvents: Array<{ event_type: string; created_at: string; metadata: unknown }> = [];
+  let recentEvents: Array<{ id: string; event_type: string; created_at: string; metadata: unknown }> = [];
   let aiFailures = 0;
   let aiTotal = 0;
   let error: string | null = null;
@@ -87,8 +87,8 @@ export default async function AdminJobsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-200">
-                  {recentEvents.map((e, i) => (
-                    <tr key={i} className="hover:bg-stone-50">
+                  {recentEvents.map((e) => (
+                    <tr key={e.id} className="hover:bg-stone-50">
                       <td className="px-3 py-1.5 text-xs text-stone-600 whitespace-nowrap">{new Date(e.created_at).toLocaleString()}</td>
                       <td className="px-3 py-1.5">
                         <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-stone-100 text-stone-800">{e.event_type}</span>

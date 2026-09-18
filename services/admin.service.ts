@@ -286,18 +286,53 @@ export async function getAdminUserDetail(userId: string): Promise<AdminUserDetai
   };
 }
 
+export interface AdminSpaceRow {
+  id: string;
+  name: string;
+  description: string | null;
+  user_id: string;
+  created_at: string;
+  projectCount: number;
+}
+
+export async function listAdminSpaces(opts: {
+  q?: string;
+  userId?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AdminSpaceRow[]> {
+  const db = getServiceDb();
+  let query = db.from("spaces").select("id, name, description, user_id, created_at").order("created_at", { ascending: false });
+  if (opts.q) query = query.ilike("name", `%${opts.q}%`);
+  if (opts.userId) query = query.eq("user_id", opts.userId);
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+  query = query.range(offset, offset + limit - 1);
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  const spaces = (data ?? []) as Array<{ id: string; name: string; description: string | null; user_id: string; created_at: string }>;
+  if (spaces.length === 0) return [];
+  const { data: projects } = await db.from("projects").select("space_id").in("space_id", spaces.map((s) => s.id));
+  const counts = new Map<string, number>();
+  for (const p of ((projects ?? []) as Array<{ space_id: string }>)) {
+    counts.set(p.space_id, (counts.get(p.space_id) ?? 0) + 1);
+  }
+  return spaces.map((s) => ({ ...s, projectCount: counts.get(s.id) ?? 0 }));
+}
+
 export async function listAdminProjects(opts: {
   q?: string;
   userId?: string;
   limit?: number;
   offset?: number;
-}): Promise<Array<{ id: string; name: string; description: string | null; user_id: string; space_id: string; created_at: string }>> {
+}): Promise<Array<{ id: string; name: string; description: string | null;   user_id: string; space_id: string; created_at: string }>> {
   const db = getServiceDb();
   let query = db.from("projects").select("id, name, description, user_id, space_id, created_at").order("created_at", { ascending: false });
   if (opts.q) query = query.ilike("name", `%${opts.q}%`);
   if (opts.userId) query = query.eq("user_id", opts.userId);
-  if (opts.limit) query = query.limit(opts.limit);
-  if (opts.offset) query = query.range(opts.offset, (opts.offset + (opts.limit ?? 20) - 1));
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+  query = query.range(offset, offset + limit - 1);
   const { data, error } = await query;
   if (error) throw new Error(error.message);
   return (data ?? []) as Array<{ id: string; name: string; description: string | null; user_id: string; space_id: string; created_at: string }>;
@@ -415,7 +450,7 @@ export async function getAdminAiUsage(): Promise<AdminAiUsage> {
 }
 
 export interface AdminJobHealth {
-  recentEvents: Array<{ event_type: string; created_at: string; metadata: unknown }>;
+  recentEvents: Array<{ id: string; event_type: string; created_at: string; metadata: unknown }>;
   aiTotal: number;
   aiFailures: number;
 }
@@ -428,7 +463,7 @@ export async function getAdminJobHealth(): Promise<AdminJobHealth> {
   const db = getServiceDb();
   const { data, error } = await db
     .from("learning_events")
-    .select("event_type, created_at, metadata")
+    .select("id, event_type, created_at, metadata")
     .in("event_type", ["MATERIAL_READY", "MATERIAL_FAILED", "MATERIAL_PROCESSING_STARTED", "MATERIAL_UPLOADED", "QUIZ_COMPLETED", "MASTERY_UPDATED", "RECOMMENDATION_GENERATED"])
     .order("created_at", { ascending: false })
     .limit(50);
@@ -450,3 +485,269 @@ export async function getAdminJobHealth(): Promise<AdminJobHealth> {
     aiFailures,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* System Health (Task 2) — lightweight, admin-only, server-side only. */
+/* Every check is real (live query / config presence / short-timeout    */
+/* probe) and never returns secret values — only presence + labels.     */
+/* Individual checks degrade to `unknown` instead of throwing so one    */
+/* failing dependency never blanks the whole page.                      */
+/* ------------------------------------------------------------------ */
+
+export type HealthCheckStatus = "ok" | "degraded" | "not_configured" | "unknown";
+
+export interface HealthCheck {
+  key: "database" | "storage" | "chat" | "embeddings" | "jobs";
+  label: string;
+  status: HealthCheckStatus;
+  /** Human-readable detail — never contains secret values. */
+  detail: string;
+  latencyMs?: number | null;
+}
+
+export type OverallHealth = "HEALTHY" | "DEGRADED";
+
+export interface AdminSystemHealth {
+  overall: OverallHealth;
+  checkedAt: string;
+  chatProvider: "mercury" | "meta" | "none";
+  chatModel: string | null;
+  embeddingProvider: "local" | "groq";
+  embeddingModel: string;
+  checks: HealthCheck[];
+  aiFailureCount24h: number | null;
+  materialFailedCount24h: number | null;
+  recentAiFailures: Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }>;
+  failedMaterials: Array<{ id: string; filename: string; processing_error: string | null; created_at: string }>;
+}
+
+const HEALTH_TIMEOUT_MS = 4000;
+const HEALTH_WINDOW_HOURS = 24;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
+/**
+ * Pure aggregation for tests: DEGRADED when the database is not ok, when
+ * storage/chat/embeddings report degraded, or when chat was never
+ * configured. `not_configured` jobs (Inngest keys) and `unknown` probes do
+ * not flip the overall state on their own — the page surfaces them with
+ * their own badge so an admin can tell "cannot check" from "failing".
+ */
+export function computeOverallStatus(
+  checks: Array<Pick<HealthCheck, "key" | "status">>
+): OverallHealth {
+  const byKey = new Map(checks.map((c) => [c.key, c.status]));
+  if (byKey.get("database") !== "ok") return "DEGRADED";
+  if (byKey.get("storage") === "degraded") return "DEGRADED";
+  if (byKey.get("chat") === "degraded" || byKey.get("chat") === "not_configured") return "DEGRADED";
+  if (byKey.get("embeddings") === "degraded") return "DEGRADED";
+  return "HEALTHY";
+}
+
+async function checkDatabase(): Promise<HealthCheck> {
+  const t0 = Date.now();
+  try {
+    const db = getServiceDb();
+    const { error } = await withTimeout(
+      db.from("projects").select("id", { count: "exact", head: true }) as unknown as Promise<{ error: { message: string } | null }>,
+      HEALTH_TIMEOUT_MS,
+      "Database query"
+    );
+    if (error) {
+      return { key: "database", label: "Database", status: "degraded", detail: `Query failed: ${error.message.slice(0, 200)}`, latencyMs: Date.now() - t0 };
+    }
+    return { key: "database", label: "Database", status: "ok", detail: "Supabase Postgres reachable (live count query).", latencyMs: Date.now() - t0 };
+  } catch (e) {
+    return { key: "database", label: "Database", status: "unknown", detail: `Check could not run: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, latencyMs: null };
+  }
+}
+
+async function checkStorage(): Promise<HealthCheck> {
+  const t0 = Date.now();
+  try {
+    const db = getServiceDb();
+    const { error } = await withTimeout(db.storage.from("materials").list("", { limit: 1 }), HEALTH_TIMEOUT_MS, "Storage check");
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes("bucket") && msg.includes("not found")) {
+        return { key: "storage", label: "Storage", status: "degraded", detail: 'Bucket "materials" not found — create it (private) or run db/schema/003_storage.sql.', latencyMs: Date.now() - t0 };
+      }
+      return { key: "storage", label: "Storage", status: "degraded", detail: `Storage check failed: ${error.message.slice(0, 200)}`, latencyMs: Date.now() - t0 };
+    }
+    return { key: "storage", label: "Storage", status: "ok", detail: 'Bucket "materials" reachable (live list probe).', latencyMs: Date.now() - t0 };
+  } catch (e) {
+    return { key: "storage", label: "Storage", status: "unknown", detail: `Check could not run: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, latencyMs: null };
+  }
+}
+
+function checkChatConfig(): HealthCheck {
+  const mercuryKey = process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
+  const metaKey = process.env.META_API_KEY;
+  if (mercuryKey) {
+    return { key: "chat", label: "AI chat", status: "ok", detail: `Mercury configured (model ${process.env.MERCURY_CHAT_MODEL || "mercury-2.5"}). Configuration check only — no live call, no cost.` };
+  }
+  if (metaKey) {
+    return { key: "chat", label: "AI chat", status: "ok", detail: "Meta Llama API configured (model Llama-4-Maverick-17B-128E-Instruct-FP8). Configuration check only — no live call, no cost." };
+  }
+  return { key: "chat", label: "AI chat", status: "not_configured", detail: "No chat provider key set (MERCURY_API_KEY or META_API_KEY). Tutor, quiz, and recommendations will fail." };
+}
+
+async function checkEmbeddings(): Promise<HealthCheck> {
+  const provider = (process.env.EMBEDDING_PROVIDER || "local").toLowerCase() === "groq" ? "groq" : "local";
+  if (provider === "groq") {
+    if (!process.env.GROQ_API_KEY) {
+      return { key: "embeddings", label: "Embeddings", status: "not_configured", detail: "EMBEDDING_PROVIDER=groq but GROQ_API_KEY is not set. Retrieval will fail." };
+    }
+    return { key: "embeddings", label: "Embeddings", status: "ok", detail: "Groq embeddings configured (model nomic-embed-text-v1.5). Configuration check only — no live call, no cost." };
+  }
+  const baseUrl = process.env.EMBEDDING_API_BASE_URL || "http://localhost:8000/v1";
+  const model = process.env.EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5";
+  const t0 = Date.now();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, { signal: controller.signal });
+      if (!res.ok) {
+        return { key: "embeddings", label: "Embeddings", status: "degraded", detail: `Local embedding service responded HTTP ${res.status} at ${baseUrl} (model ${model}).`, latencyMs: Date.now() - t0 };
+      }
+      return { key: "embeddings", label: "Embeddings", status: "ok", detail: `Local embedding service reachable at ${baseUrl} (model ${model}, live probe).`, latencyMs: Date.now() - t0 };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const unreachable = /abort|fetch failed|ECONNREFUSED|Connect|ENOTFOUND/i.test(msg);
+    return {
+      key: "embeddings",
+      label: "Embeddings",
+      status: "degraded",
+      detail: unreachable
+        ? `Local embedding service unreachable at ${baseUrl} (model ${model}) — start it: cd embeddings && docker compose up -d --build.`
+        : `Embedding probe could not run: ${msg.slice(0, 200)}`,
+      latencyMs: null,
+    };
+  }
+}
+
+async function checkJobs(): Promise<HealthCheck> {
+  const hasEventKey = !!process.env.INNGEST_EVENT_KEY;
+  const hasSigningKey = !!process.env.INNGEST_SIGNING_KEY;
+  const configured = hasEventKey && hasSigningKey;
+  try {
+    const db = getServiceDb();
+    const windowStart = new Date(Date.now() - HEALTH_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+    const { count, error } = await withTimeout(
+      db.from("learning_events").select("id", { count: "exact", head: true }).gte("created_at", windowStart) as unknown as Promise<{ count: number | null; error: { message: string } | null }>,
+      HEALTH_TIMEOUT_MS,
+      "Jobs signal query"
+    );
+    if (error) {
+      return { key: "jobs", label: "Background jobs", status: "unknown", detail: `Event signal unreadable: ${error.message.slice(0, 160)}`, latencyMs: null };
+    }
+    const suffix = configured
+      ? `Inngest keys set; ${count ?? 0} learning events in the last ${HEALTH_WINDOW_HOURS}h.`
+      : `INNGEST_EVENT_KEY/SIGNING_KEY not set — running on direct-call fallback (local dev mode); ${count ?? 0} learning events in the last ${HEALTH_WINDOW_HOURS}h.`;
+    return { key: "jobs", label: "Background jobs", status: configured ? "ok" : "not_configured", detail: suffix };
+  } catch (e) {
+    return { key: "jobs", label: "Background jobs", status: "unknown", detail: `Check could not run: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`, latencyMs: null };
+  }
+}
+
+/**
+ * Lightweight system health for the admin dashboard. Caller must have
+ * passed requireAdmin(); uses the service role server-side only.
+ * Never throws for a single failing dependency — checks settle
+ * independently and failures render as their own status badge.
+ */
+export async function getAdminSystemHealth(): Promise<AdminSystemHealth> {
+  const embeddingProvider = (process.env.EMBEDDING_PROVIDER || "local").toLowerCase() === "groq" ? ("groq" as const) : ("local" as const);
+  const mercuryKey = process.env.MERCURY_API_KEY || process.env.INCEPTION_API_KEY;
+  const metaKey = process.env.META_API_KEY;
+  const chatProvider = mercuryKey ? ("mercury" as const) : metaKey ? ("meta" as const) : ("none" as const);
+  const chatModel = chatProvider === "mercury" ? process.env.MERCURY_CHAT_MODEL || "mercury-2.5" : chatProvider === "meta" ? "Llama-4-Maverick-17B-128E-Instruct-FP8" : null;
+
+  const [database, storage, embeddings, jobs] = await Promise.all([
+    checkDatabase(),
+    checkStorage(),
+    checkEmbeddings(),
+    checkJobs(),
+  ]);
+  const chat = checkChatConfig();
+  const checks: HealthCheck[] = [database, storage, chat, embeddings, jobs];
+
+  let aiFailureCount24h: number | null = null;
+  let materialFailedCount24h: number | null = null;
+  let recentAiFailures: AdminSystemHealth["recentAiFailures"] = [];
+  let failedMaterials: AdminSystemHealth["failedMaterials"] = [];
+  try {
+    const db = getServiceDb();
+    const windowStart = new Date(Date.now() - HEALTH_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+    // Note: supabase builders are thenables with builder-flavored types, so
+    // cast each to the resolved shape before the timeout race.
+    type CountResult = { count: number | null; error: { message: string } | null };
+    type AiFailRows = { data: Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }> | null; error: { message: string } | null };
+    type FailedMatRows = { data: Array<{ id: string; filename: string; processing_error: string | null; created_at: string }> | null; error: { message: string } | null };
+    const [aiFailRes, matFailRes, recentFailRes, failedMatRes] = await Promise.all([
+      withTimeout(
+        db.from("ai_operations").select("id", { count: "exact", head: true }).eq("success", false).gte("created_at", windowStart) as unknown as Promise<CountResult>,
+        HEALTH_TIMEOUT_MS,
+        "AI failure count"
+      ).catch(() => null),
+      withTimeout(
+        db.from("learning_events").select("id", { count: "exact", head: true }).eq("event_type", "MATERIAL_FAILED").gte("created_at", windowStart) as unknown as Promise<CountResult>,
+        HEALTH_TIMEOUT_MS,
+        "Material failure count"
+      ).catch(() => null),
+      withTimeout(
+        db.from("ai_operations").select("id, feature, model, error, created_at").eq("success", false).order("created_at", { ascending: false }).limit(10) as unknown as Promise<AiFailRows>,
+        HEALTH_TIMEOUT_MS,
+        "Recent AI failures"
+      ).catch(() => null),
+      withTimeout(
+        db.from("materials").select("id, filename, processing_error, created_at").eq("status", "FAILED").order("created_at", { ascending: false }).limit(10) as unknown as Promise<FailedMatRows>,
+        HEALTH_TIMEOUT_MS,
+        "Failed materials"
+      ).catch(() => null),
+    ]);
+    if (aiFailRes && !aiFailRes.error && typeof aiFailRes.count === "number") aiFailureCount24h = aiFailRes.count;
+    if (matFailRes && !matFailRes.error && typeof matFailRes.count === "number") materialFailedCount24h = matFailRes.count;
+    if (recentFailRes && !recentFailRes.error) {
+      recentAiFailures = ((recentFailRes.data ?? []) as Array<{ id: string; feature: string; model: string; error: string | null; created_at: string }>).map((r) => ({
+        ...r,
+        error: r.error ? r.error.slice(0, 300) : null,
+      }));
+    }
+    if (failedMatRes && !failedMatRes.error) {
+      failedMaterials = ((failedMatRes.data ?? []) as Array<{ id: string; filename: string; processing_error: string | null; created_at: string }>).map((r) => ({
+        ...r,
+        processing_error: r.processing_error ? r.processing_error.slice(0, 300) : null,
+      }));
+    }
+  } catch {
+    // Failure tallies are best-effort; the five checks above are the signal.
+  }
+
+  return {
+    overall: computeOverallStatus(checks),
+    checkedAt: new Date().toISOString(),
+    chatProvider,
+    chatModel,
+    embeddingProvider,
+    embeddingModel: embeddingProvider === "groq" ? "nomic-embed-text-v1.5" : process.env.EMBEDDING_MODEL || "BAAI/bge-small-en-v1.5",
+    checks,
+    aiFailureCount24h,
+    materialFailedCount24h,
+    recentAiFailures,
+    failedMaterials,
+  };
+}
+

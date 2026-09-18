@@ -4,13 +4,14 @@ import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminUserDetailPage({ params }: { params: { userId: string } }) {
+export default async function AdminUserDetailPage({ params }: { params: Promise<{ userId: string }> }) {
   await requireAdmin();
+  const { userId } = await params;
 
   let detail: Awaited<ReturnType<typeof getAdminUserDetail>> | null = null;
   let error: string | null = null;
   try {
-    detail = await getAdminUserDetail(params.userId);
+    detail = await getAdminUserDetail(userId);
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -32,6 +33,9 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
 
   return (
     <div className="space-y-8">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">User detail</h1>
+      </div>
       <div className="flex items-center gap-3">
         <Link href="/admin/users" className="text-sm text-stone-800 hover:text-stone-900">
           ← Users
@@ -139,8 +143,8 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-200">
-                  {detail.assessments.byScore.map((a, i) => (
-                    <tr key={i} className="hover:bg-stone-50">
+                  {detail.assessments.byScore.map((a) => (
+                    <tr key={`${a.question_id}-${a.created_at}`} className="hover:bg-stone-50">
                       <td className="px-3 py-1.5 text-xs text-stone-600">{new Date(a.created_at).toLocaleString()}</td>
                       <td className="px-3 py-1.5 text-stone-900">{a.score ?? "—"}</td>
                       <td className="px-3 py-1.5">
@@ -176,7 +180,7 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
                 </thead>
                 <tbody className="divide-y divide-stone-200">
                   {detail.mastery.map((m) => (
-                    <tr key={m.concept_id} className="hover:bg-stone-50">
+                    <tr key={`${m.concept_id}-${m.project_id}`} className="hover:bg-stone-50">
                       <td className="px-3 py-1.5 text-stone-900">
                         {m.conceptName ?? m.concept_id.slice(0, 8)}
                         <div className="text-xs font-mono text-stone-400">{m.concept_id.slice(0, 8)}…</div>
@@ -205,8 +209,8 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-200">
-                    {detail.masteryHistory.map((h) => (
-                      <tr key={`${h.concept_id}-${h.created_at}`} className="hover:bg-stone-50">
+                    {detail.masteryHistory.map((h, i) => (
+                      <tr key={`${h.concept_id}-${h.created_at}-${i}`} className="hover:bg-stone-50">
                         <td className="px-3 py-1 text-stone-600">{new Date(h.created_at).toLocaleString()}</td>
                         <td className="px-3 py-1 font-mono text-stone-600">{h.concept_id.slice(0, 8)}…</td>
                         <td className="px-3 py-1 font-mono text-stone-900">
@@ -254,9 +258,9 @@ export default async function AdminUserDetailPage({ params }: { params: { userId
                       <th className="px-3 py-2 text-left text-xs font-medium text-stone-500 uppercase">Success</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-stone-200">
-                    {detail.aiUsage.recent.map((r, i) => (
-                      <tr key={i} className="hover:bg-stone-50">
+                <tbody className="divide-y divide-stone-200">
+                      {detail.aiUsage.recent.map((r, i) => (
+                      <tr key={`${r.feature}-${r.created_at}-${i}`} className="hover:bg-stone-50">
                         <td className="px-3 py-1.5 text-xs text-stone-600">{new Date(r.created_at).toLocaleString()}</td>
                         <td className="px-3 py-1.5 text-stone-900">{r.feature}</td>
                         <td className="px-3 py-1.5 text-xs text-stone-600">{r.model}</td>

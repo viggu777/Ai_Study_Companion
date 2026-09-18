@@ -17,7 +17,9 @@ export default async function AdminDashboardPage() {
   if (error) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Admin Dashboard</h1>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Overview</h1>
+        </div>
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
           Failed to load counts: {error}
           <p className="text-xs text-red-600 mt-2">
@@ -45,7 +47,7 @@ export default async function AdminDashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Admin Dashboard</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Overview</h1>
         <p className="text-sm text-stone-500 mt-1">
           High-level counts across all users — live queries via service role (bypass RLS). Verify with:{" "}
           <code className="bg-stone-100 px-1 rounded text-xs">SELECT count(*) FROM &lt;table&gt;</code>
