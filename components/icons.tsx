@@ -253,3 +253,22 @@ export function PracticeIcon({ className }: IconProps) {
     </Base>
   );
 }
+
+export function PinIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <path d="M9 4h6l1 7 3 3v2H5v-2l3-3 1-7z" />
+      <path d="M12 16v5" />
+    </Base>
+  );
+}
+
+export function TrashIcon({ className }: IconProps) {
+  return (
+    <Base className={className}>
+      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      <path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" />
+      <path d="M10 11v6M14 11v6" />
+    </Base>
+  );
+}
