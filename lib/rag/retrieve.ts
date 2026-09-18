@@ -14,7 +14,7 @@ import { logAiOperation } from "@/lib/ai/observability";
  * Cosine similarity threshold for relevance.
  * Chunks below this similarity are considered not relevant.
  * Named constant per spec — not an inline magic number.
- * nomic-embed-text-v1.5 typically yields 0.5-0.9 for related content,
+ * BAAI/bge-small-en-v1.5 typically yields 0.5-0.9 for related content,
  * 0.2-0.5 for unrelated; 0.25 is conservative to avoid false negatives
  * while still filtering truly irrelevant queries.
  */

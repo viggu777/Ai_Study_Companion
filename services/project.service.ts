@@ -73,7 +73,12 @@ export async function updateSpace(spaceId: string, name: string, description?: s
     .select()
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    // Zero rows updated (missing or owned by someone else) surfaces as PGRST116
+    // — report 404, not a generic failure.
+    if (error.code === "PGRST116") throw new Error("Space not found");
+    throw new Error(error.message);
+  }
   return data;
 }
 
@@ -81,13 +86,17 @@ export async function deleteSpace(spaceId: string) {
   const userId = await getCurrentUserId();
   const db = await getDb();
 
-  const { error } = await db
+  // select() back so a zero-row delete (missing/foreign id) is distinguishable
+  // from a real delete — bare deletes succeed silently on zero rows.
+  const { data, error } = await db
     .from("spaces")
     .delete()
     .eq("id", spaceId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .select("id");
 
   if (error) throw new Error(error.message);
+  if (!data || data.length === 0) throw new Error("Space not found");
 }
 
 export async function createProject(
@@ -196,7 +205,10 @@ export async function updateProject(
     .select()
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (error.code === "PGRST116") throw new Error("Project not found");
+    throw new Error(error.message);
+  }
   return data;
 }
 
@@ -204,13 +216,15 @@ export async function deleteProject(projectId: string) {
   const userId = await getCurrentUserId();
   const db = await getDb();
 
-  const { error } = await db
+  const { data, error } = await db
     .from("projects")
     .delete()
     .eq("id", projectId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .select("id");
 
   if (error) throw new Error(error.message);
+  if (!data || data.length === 0) throw new Error("Project not found");
 }
 
 async function emitLearningEvent(params: {

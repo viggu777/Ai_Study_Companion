@@ -16,11 +16,18 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     await requireUserId();
-    const { name, description } = await request.json();
-    if (!name || name.trim() === "") {
+    let body: { name?: unknown; description?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const name = typeof body.name === "string" ? body.name : "";
+    if (name.trim() === "") {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
-    const space = await createSpace(name.trim(), description?.trim());
+    const description = typeof body.description === "string" ? body.description.trim() : undefined;
+    const space = await createSpace(name.trim(), description);
     return NextResponse.json(space, { status: 201 });
   } catch (e) {
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

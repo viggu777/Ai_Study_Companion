@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Alert, Button, Card, Field, PageHeader, Spinner, inputClass } from "@/components/ui";
+import { Alert, Button, Card, Field, Spinner, inputClass } from "@/components/ui";
 
 export default function NewSpacePage() {
   const [name, setName] = useState("");
@@ -41,11 +41,8 @@ export default function NewSpacePage() {
   }
 
   return (
-    <div className="page-enter mx-auto max-w-2xl">
-      <PageHeader
-        title="New Space"
-        description="Spaces group related projects together — e.g. one space per course."
-      />
+    <div className="page-enter max-w-2xl">
+      <p className="mb-4 text-sm text-stone-500">Spaces group related projects together — e.g. one space per course.</p>
       <Card className="p-6">
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <Alert>{error}</Alert>}

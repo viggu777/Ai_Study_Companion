@@ -1,8 +1,9 @@
 import { getCurrentUser } from "@/lib/auth/getCurrentUser";
+import Link from "next/link";
 import { getSpace, listProjects } from "@/services/project.service";
 import { notFound } from "next/navigation";
 import { ArrowRightIcon, FolderIcon, PlusIcon } from "@/components/icons";
-import { EmptyState, LinkButton, PageHeader } from "@/components/ui";
+import { EmptyState, LinkButton } from "@/components/ui";
 
 export default async function SpacePage({
   params,
@@ -20,16 +21,13 @@ export default async function SpacePage({
 
   return (
     <div className="page-enter">
-      <PageHeader
-        title={space.name}
-        description={space.description || "Projects in this space."}
-        actions={
-          <LinkButton href={`/spaces/${spaceId}/projects/new`} size="sm">
-            <PlusIcon className="h-4 w-4" />
-            New Project
-          </LinkButton>
-        }
-      />
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <p className="min-w-0 flex-1 text-sm text-stone-500">{space.description || "Projects in this space."}</p>
+        <LinkButton href={`/spaces/${spaceId}/projects/new`} size="sm">
+          <PlusIcon className="h-4 w-4" />
+          New Project
+        </LinkButton>
+      </div>
       {projects.length === 0 ? (
         <EmptyState
           icon={<FolderIcon className="h-5 w-5" />}
@@ -45,9 +43,10 @@ export default async function SpacePage({
       ) : (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {projects.map((project) => (
-            <a
+            <Link
               key={project.id}
               href={`/projects/${project.id}`}
+              prefetch
               className="group rounded-xl border border-stone-200 bg-white p-5 shadow-card transition-all hover:-translate-y-0.5 hover:shadow-card-hover"
             >
               <div className="flex items-start justify-between gap-3">
@@ -66,7 +65,7 @@ export default async function SpacePage({
               <p className="mt-3 text-xs text-stone-400">
                 Created {new Date(project.created_at).toLocaleDateString()}
               </p>
-            </a>
+            </Link>
           ))}
         </div>
       )}

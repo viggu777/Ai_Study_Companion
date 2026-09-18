@@ -52,7 +52,8 @@ export async function POST(
     const { projectId } = await params;
     const userId = await requireUserId();
     const body = await request.json().catch(() => ({}));
-    const query = (body.query as string) ?? "";
+    const rawQuery = (body.query as unknown) ?? "";
+    const query = typeof rawQuery === "string" ? rawQuery : "";
     const topK = body.topK ? Math.min(20, Math.max(1, Number(body.topK) || DEFAULT_TOP_K)) : DEFAULT_TOP_K;
     const threshold = body.threshold != null ? Number(body.threshold) : RELEVANCE_THRESHOLD;
 

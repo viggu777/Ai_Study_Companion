@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Alert, Button, Card, Field, PageHeader, Spinner, inputClass } from "@/components/ui";
+import { Alert, Button, Card, Field, Spinner, inputClass } from "@/components/ui";
 
 export default function NewProjectPage() {
   const params = useParams();
@@ -48,11 +48,8 @@ export default function NewProjectPage() {
   }
 
   return (
-    <div className="page-enter mx-auto max-w-2xl">
-      <PageHeader
-        title="New Project"
-        description="Upload materials, chat with the tutor and track mastery."
-      />
+    <div className="page-enter max-w-2xl">
+      <p className="mb-4 text-sm text-stone-500">Upload materials, chat with the tutor and track mastery.</p>
       <Card className="p-6">
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <Alert>{error}</Alert>}
