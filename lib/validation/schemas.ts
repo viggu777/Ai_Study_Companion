@@ -100,6 +100,67 @@ export function parseQuizGenerateBody(body: unknown): SchemaResult<{ count?: num
   return { ok: true, data: { count, conceptIds, materialIds } };
 }
 
+const VALID_PRACTICE_TYPES = ["MCQ", "TRUE_FALSE", "ONE_WORD", "OPEN_ENDED"] as const;
+export type PracticeTypeFilter = (typeof VALID_PRACTICE_TYPES)[number];
+
+export function parsePracticeGenerateBody(
+  body: unknown
+): SchemaResult<{ count?: number; level?: string; conceptIds?: string[]; questionTypes?: PracticeTypeFilter[] }> {
+  if (typeof body !== "object" || body === null) return { ok: true, data: {} };
+  const b = body as Record<string, unknown>;
+  let count: number | undefined;
+  if (b.count !== undefined) {
+    if (typeof b.count !== "number" || !Number.isInteger(b.count)) {
+      return { ok: false, error: "count must be an integer" };
+    }
+    if (b.count < 1 || b.count > 8) {
+      return { ok: false, error: "count must be 1-8" };
+    }
+    count = b.count;
+  }
+  let level: string | undefined;
+  if (b.level !== undefined) {
+    if (typeof b.level !== "string") return { ok: false, error: "level must be a string" };
+    level = b.level;
+  }
+  const parseIdList = (v: unknown, max = 200): string[] | undefined | null => {
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) return null;
+    if (v.length === 0) return null;
+    if (v.length > max) return null;
+    const seen = new Set<string>();
+    for (const item of v) {
+      if (typeof item !== "string") return null;
+      const t = item.trim();
+      if (t.length === 0 || t.length > QUESTION_ID_MAX) return null;
+      seen.add(t);
+    }
+    if (seen.size === 0) return null;
+    return [...seen];
+  };
+  const conceptIds = parseIdList(b.conceptIds ?? b.concept_ids);
+  if (conceptIds === null) return { ok: false, error: "conceptIds must be a non-empty array of id strings (max 200)" };
+  let questionTypes: PracticeTypeFilter[] | undefined;
+  const rawTypes = b.questionTypes ?? b.question_types ?? b.types;
+  if (rawTypes !== undefined) {
+    if (!Array.isArray(rawTypes) || rawTypes.length === 0 || rawTypes.length > 4) {
+      return { ok: false, error: "questionTypes must be a non-empty array (max 4)" };
+    }
+    const out: PracticeTypeFilter[] = [];
+    for (const t of rawTypes) {
+      if (typeof t !== "string") return { ok: false, error: "questionTypes must be MCQ, TRUE_FALSE, ONE_WORD, OPEN_ENDED" };
+      const upper = t.toUpperCase() as PracticeTypeFilter;
+      if (!(VALID_PRACTICE_TYPES as readonly string[]).includes(upper)) {
+        return { ok: false, error: "questionTypes must be MCQ, TRUE_FALSE, ONE_WORD, OPEN_ENDED" };
+      }
+      if (!out.includes(upper)) out.push(upper);
+    }
+    if (out.length === 0) return { ok: false, error: "questionTypes must be a non-empty array (max 4)" };
+    questionTypes = out;
+  }
+  return { ok: true, data: { count, level, conceptIds, questionTypes } };
+}
+
 export function parseQuizSubmitBody(body: unknown): SchemaResult<{ questionId: string; response: string }> {
   if (typeof body !== "object" || body === null) return { ok: false, error: "Invalid JSON body" };
   const b = body as Record<string, unknown>;

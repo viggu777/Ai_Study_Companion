@@ -67,7 +67,7 @@ the closed learning loop.
 ## How to run tests
 
 ```bash
-npm test        # vitest — 270 unit/integration tests across 21 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile, gemini-embedding-2 formatting, migration ordering)
+npm test        # vitest — 290 unit/integration tests across 23 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile, gemini-embedding-2 formatting + mocked error paths, migration ordering)
 npm run eval    # tsx tests/eval/run-eval.ts — 18 evaluation fixtures, writes tests/eval/results.json + evaluation-results.json + per-run history in tests/eval/history/
 npm run build   # production Next.js build (must compile clean)
 npm run lint    # ESLint (must report no warnings)
@@ -103,18 +103,52 @@ Gemini `gemini-embedding-2` (768 dims, `chunks.embedding VECTOR(768)`).
 
 ## Embedding-service setup
 
-Embeddings use Google Gemini (Free Tier eligible) — no Docker needed:
+Embeddings use Google Gemini `gemini-embedding-2` (Free Tier eligible) — no Docker needed.
+`gemini-embedding-2` is the current and only embedding model. Document and query
+embeddings always use the same model and configuration (`outputDimensionality=768`,
+documents as `title: ... | text: ...`, queries as `task: search result | query: ...`).
 
 ```bash
-# .env.local
+# .env.local (server-only, never exposed to the client)
 GEMINI_API_KEY=your-key-from-https://aistudio.google.com/apikey
 ```
 
-Apply `db/schema/012_embeddings_gemini2_768.sql` so `chunks.embedding` stays
-`VECTOR(768)` in the Gemini 2 embedding space. Old gemini-embedding-001
-(768d) / bge-small (384d) / nomic (768d) rows are purged by the
-migration — press Retry on FAILED materials or run
-`npx tsx scripts/reindex-gemini-embeddings.ts` to re-embed.
+Vector dimension: **768**. `gemini-embedding-2` natively supports Matryoshka
+truncation; 768 is a Google-recommended size that preserves the existing
+`chunks.embedding VECTOR(768)` column (no resize needed), keeps storage and
+vector-search cost low, and is verified live (`outputDimensionality=768`
+returns 768 floats). `match_chunks(query_embedding vector(768), ...)` and the
+`EMBEDDING_DIM` / `GEMINI_EMBEDDING_DIM` guards enforce it — never mix models
+or dimensions in `chunks.embedding`.
+
+Clean dataset (2026-09-18): all old testing/failed learning and indexing data
+(spaces, projects, materials, chunks, concepts, mastery, conversations,
+messages, quizzes, questions, answers, recommendations, learning events,
+`ai_operations`, practice tables, storage objects) was intentionally deleted via
+a transactional reset — schema, RLS policies, indexes, and `match_chunks` were
+preserved, `auth.users` (including the admin account) was kept. No old vectors
+were migrated or re-embedded; the application starts from a clean dataset ready
+for fresh materials.
+
+New indexing flow: PDF → extract text → chunk (~2400 chars / 320 overlap) →
+Gemini Embedding 2 (batched, 20 per request) → store vector → concept
+extraction → READY. Statuses stay QUEUED → PROCESSING → READY / FAILED with
+claim-guard idempotency and Inngest + inline fallback — no duplicate chunks or
+duplicate embedding operations, READY materials are never auto-reprocessed.
+
+Retrieval flow: question → Gemini Embedding 2 (same model/dim, cached 10 min
+per normalized query) → pgvector `match_chunks` scoped by `project_id`
+(`RELEVANCE_THRESHOLD=0.25`, default top-K 5, balanced across materials) →
+grounded Tutor with citations, or the fixed insufficient-evidence response.
+Manual check: `GET /api/projects/[projectId]/retrieve?q=...`.
+
+Cost control: Gemini is called only for real embedding work (material
+processing batches + uncached retrieval queries). No embeddings on page open,
+dashboard loading, or for READY materials; no re-index of historical data
+(`scripts/reindex-gemini-embeddings.ts` is a manual tool, not run as part of
+this reset). Every embedding call logs provider, model, latency,
+success/failure, request ID, and token/cost estimates to `ai_operations`
+without ever logging the API key.
 
 ## Configuration examples
 
@@ -129,7 +163,7 @@ is gitignored). `.env.example` is the canonical key list.
 Deployment architecture: Vercel (Next.js app) + Supabase (Postgres/pgvector,
 Auth, Storage) + Inngest (background jobs) + Google Gemini embeddings.
 Steps: import the repo in Vercel, set all `.env.example` keys
-in Vercel + Inngest, run migrations `001`→`010` via `npm run migrate`
+in Vercel + Inngest, run migrations `001`→`014` via `npm run migrate`
 (or Supabase SQL Editor in order),
 ensure the private `materials` bucket exists, sync `/api/inngest` in Inngest
 Cloud, then smoke-test the full loop on the live URL (signup → space/project

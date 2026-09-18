@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { PracticeIcon, ArrowRightIcon } from "@/components/icons";
@@ -9,6 +9,7 @@ import {
   PRACTICE_MAX_COUNT,
   PRACTICE_MIN_COUNT,
   PRACTICE_LEVEL_LABEL,
+  PRACTICE_QUESTION_TYPES,
   PRACTICE_SECTION_LABEL,
   clampPracticeCount,
   clampPracticeLevel,
@@ -17,6 +18,36 @@ import {
   type PracticeQuestionType,
   type PracticeSection,
 } from "@/ai/practice";
+
+interface ConceptMeta {
+  conceptId: string;
+  conceptName: string;
+  description: string | null;
+  sourceMaterialId: string | null;
+  materialName: string | null;
+  currentScore: number | null;
+}
+
+const TYPE_META: Array<{ type: PracticeQuestionType; title: string; desc: string; instant: boolean }> = [
+  { type: "MCQ", title: "Multiple choice", desc: "Section A · 4 options", instant: true },
+  { type: "TRUE_FALSE", title: "True / False", desc: "Section A · statement check", instant: true },
+  { type: "ONE_WORD", title: "One word", desc: "Section B · short answer", instant: true },
+  { type: "OPEN_ENDED", title: "Open ended", desc: "Section C · descriptive, AI graded", instant: false },
+];
+
+function topicTone(score: number | null): "neutral" | "warning" | "accent" | "success" {
+  if (score === null) return "neutral";
+  if (score < 35) return "warning";
+  if (score < 70) return "accent";
+  return "success";
+}
+
+function topicLabel(score: number | null): string {
+  if (score === null) return "Untested";
+  if (score < 35) return `${Math.round(score)}% Weak`;
+  if (score < 70) return `${Math.round(score)}% Dev`;
+  return `${Math.round(score)}% Strong`;
+}
 
 interface AssignmentListItem {
   id: string;
@@ -167,6 +198,18 @@ export default function PracticeClient({
   const [practiceLevel, setPracticeLevel] = useState<PracticeLevel>(
     initialLevel !== undefined ? clampPracticeLevel(initialLevel) : "MIXED"
   );
+  // ---- Step 1: question-type checkboxes (Sections A/B/C) ----
+  const [selectedTypes, setSelectedTypes] = useState<Set<PracticeQuestionType>>(
+    new Set(PRACTICE_QUESTION_TYPES)
+  );
+  // ---- Step 2: topic scope (checkboxes grouped by material, like Quiz) ----
+  const [concepts, setConcepts] = useState<ConceptMeta[]>([]);
+  const [conceptsLoading, setConceptsLoading] = useState(true);
+  const [conceptsError, setConceptsError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const selectionInitRef = useRef(false);
+  const [topicSearch, setTopicSearch] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const autoStartedRef = useRef(false);
   const [active, setActive] = useState<ActiveAssignment | null>(null);
   const [activeLevel, setActiveLevel] = useState<PracticeLevel>("MIXED");
@@ -203,14 +246,131 @@ export default function PracticeClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // Topic scope data — same endpoint as the Concepts/Quiz pages (includes
+  // mastery + material names), so no new API is needed.
+  const fetchConcepts = async () => {
+    setConceptsLoading(true);
+    setConceptsError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/concepts`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to load topics");
+      const list = (data.concepts ?? []) as ConceptMeta[];
+      setConcepts(list);
+      // Default: everything selected. Only auto-init once so a background
+      // refetch never wipes the user's manual checkbox choices.
+      if (!selectionInitRef.current && list.length > 0) {
+        selectionInitRef.current = true;
+        setSelectedIds(new Set(list.map((c) => c.conceptId)));
+      }
+    } catch (e) {
+      setConceptsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConceptsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConcepts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // Group selectable topics by source material for the checkbox tree.
+  const grouped = useMemo(() => {
+    const q = topicSearch.trim().toLowerCase();
+    const map = new Map<string, { key: string; materialName: string; materialId: string | null; items: ConceptMeta[] }>();
+    for (const c of concepts) {
+      if (
+        q &&
+        !(
+          c.conceptName.toLowerCase().includes(q) ||
+          (c.description ?? "").toLowerCase().includes(q) ||
+          (c.materialName ?? "").toLowerCase().includes(q)
+        )
+      )
+        continue;
+      const key = c.sourceMaterialId ?? `__none__${c.materialName ?? "Other"}`;
+      const entry = map.get(key) ?? {
+        key,
+        materialName: c.materialName ?? "Other / no source",
+        materialId: c.sourceMaterialId,
+        items: [],
+      };
+      entry.items.push(c);
+      map.set(key, entry);
+    }
+    return [...map.values()].sort((a, b) => b.items.length - a.items.length || a.materialName.localeCompare(b.materialName));
+  }, [concepts, topicSearch]);
+
+  const totalTopics = concepts.length;
+  const selectedCount = selectedIds.size;
+  const partialTopicSelection = totalTopics > 0 && selectedCount > 0 && selectedCount < totalTopics;
+  const partialTypeSelection = selectedTypes.size > 0 && selectedTypes.size < PRACTICE_QUESTION_TYPES.length;
+  const effectiveMax = Math.min(PRACTICE_MAX_COUNT, Math.max(selectedCount, 1));
+  const clampedForSelection = Math.min(clampPracticeCount(practiceCount), effectiveMax);
+
+  const toggleType = (t: PracticeQuestionType) => {
+    setSelectedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
+  const selectAllTypes = () => setSelectedTypes(new Set(PRACTICE_QUESTION_TYPES));
+  const selectOpenEndedOnly = () => setSelectedTypes(new Set(["OPEN_ENDED" as PracticeQuestionType]));
+  const selectObjectiveOnly = () =>
+    setSelectedTypes(new Set(["MCQ" as PracticeQuestionType, "TRUE_FALSE" as PracticeQuestionType]));
+
+  const toggleConcept = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleMaterial = (items: ConceptMeta[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      const allOn = items.every((c) => next.has(c.conceptId));
+      if (allOn) for (const c of items) next.delete(c.conceptId);
+      else for (const c of items) next.add(c.conceptId);
+      return next;
+    });
+  };
+
+  const selectAllTopics = () => setSelectedIds(new Set(concepts.map((c) => c.conceptId)));
+  const clearAllTopics = () => setSelectedIds(new Set());
+  const selectWeak = () =>
+    setSelectedIds(new Set(concepts.filter((c) => c.currentScore === null || c.currentScore < 50).map((c) => c.conceptId)));
+  const selectUntested = () => setSelectedIds(new Set(concepts.filter((c) => c.currentScore === null).map((c) => c.conceptId)));
+
   const startAssignment = async () => {
+    if (selectedTypes.size === 0) {
+      setError("Select at least one question type to start practice.");
+      return;
+    }
+    if (totalTopics > 0 && selectedCount === 0) {
+      setError("Select at least one topic to start practice.");
+      return;
+    }
     setError(null);
     setGenerating(true);
     try {
+      // Partial checkbox selections scope generation server-side. Full
+      // selections send no filter (identical + keeps idempotency reuse).
+      const payload: { count: number; level: PracticeLevel; conceptIds?: string[]; questionTypes?: PracticeQuestionType[] } = {
+        count: partialTopicSelection ? clampedForSelection : clampPracticeCount(practiceCount),
+        level: practiceLevel,
+      };
+      if (partialTopicSelection) payload.conceptIds = [...selectedIds];
+      if (partialTypeSelection) payload.questionTypes = [...selectedTypes];
       const res = await fetch(`/api/projects/${projectId}/practice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: clampPracticeCount(practiceCount), level: practiceLevel }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate practice assignment");
@@ -918,6 +1078,188 @@ export default function PracticeClient({
                 <span className="font-semibold text-stone-700">Section C · Descriptive.</span> Explain, reason, teach back — AI evaluates evidence.
               </div>
             </div>
+            {/* Step 1 — Question types: tick what you want (e.g. only Open ended). */}
+            <div className="mt-4 rounded-xl border border-stone-200 bg-stone-50/60 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-stone-900">
+                  1 · Question types{" "}
+                  <span className="tnum font-normal text-stone-500" aria-live="polite">
+                    {selectedTypes.size} of {PRACTICE_QUESTION_TYPES.length} selected
+                  </span>
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" onClick={selectAllTypes} disabled={generating} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    All
+                  </button>
+                  <button type="button" onClick={selectOpenEndedOnly} disabled={generating} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40" title="Only descriptive open-ended questions">
+                    Open-ended only
+                  </button>
+                  <button type="button" onClick={selectObjectiveOnly} disabled={generating} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40" title="Only Section A objective questions">
+                    Objective only
+                  </button>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-stone-500">
+                Tick the sections you want — e.g. only Open ended for deep writing. Objective + One word check instantly; Descriptive uses AI grading.
+              </p>
+              <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+                {TYPE_META.map((m) => {
+                  const on = selectedTypes.has(m.type);
+                  return (
+                    <label key={m.type} className={`flex cursor-pointer items-start gap-2.5 rounded-xl border bg-white px-3 py-2.5 transition-colors ${on ? "border-sky-600/50 ring-1 ring-sky-600/30" : "border-stone-200 opacity-70 hover:bg-stone-50"}`}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggleType(m.type)}
+                        disabled={generating}
+                        aria-label={m.title}
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-sky-600"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-semibold text-stone-800">
+                          {m.title}{" "}
+                          <span className="ml-1 rounded-full bg-stone-100 px-1.5 py-0.5 text-[10px] font-semibold text-stone-500">
+                            {m.instant ? "instant" : "AI graded"}
+                          </span>
+                        </span>
+                        <span className="block text-xs text-stone-500">{m.desc}</span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              {partialTypeSelection && (
+                <p className="mt-1.5 text-xs text-sky-700">
+                  Custom paper — only selected types will be generated.
+                </p>
+              )}
+            </div>
+
+            {/* Step 2 — Topics: same checkbox tree as Quiz, grouped by material. */}
+            <div className="mt-4 rounded-xl border border-stone-200 bg-stone-50/60 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-stone-900">
+                  2 · Topics{" "}
+                  <span className="tnum font-normal text-stone-500" aria-live="polite">
+                    {totalTopics > 0 ? `${selectedCount} of ${totalTopics} selected` : ""}
+                  </span>
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button type="button" onClick={selectAllTopics} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    All
+                  </button>
+                  <button type="button" onClick={selectWeak} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40" title="Weak (<50%) + untested">
+                    Weak only
+                  </button>
+                  <button type="button" onClick={selectUntested} disabled={generating || conceptsLoading || totalTopics === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    Untested
+                  </button>
+                  <button type="button" onClick={clearAllTopics} disabled={generating || conceptsLoading || selectedCount === 0} className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-stone-600 ring-1 ring-inset ring-stone-200 transition-colors hover:bg-stone-100 disabled:opacity-40">
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-stone-500">
+                Mixed across all your materials — untick anything to exclude it. Adaptive difficulty still picks your weakest within the selection.
+              </p>
+              {partialTopicSelection && (
+                <p className="mt-1 text-xs text-sky-700">
+                  Only {selectedCount} topic{selectedCount === 1 ? "" : "s"} selected — you&apos;ll get up to {clampedForSelection} question{clampedForSelection === 1 ? "" : "s"} (1 per topic).
+                </p>
+              )}
+              {totalTopics > 6 && (
+                <input
+                  type="search"
+                  value={topicSearch}
+                  onChange={(e) => setTopicSearch(e.target.value)}
+                  placeholder="Filter topics…"
+                  aria-label="Filter topics"
+                  className="mt-2.5 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600"
+                />
+              )}
+              <div className="mt-2.5">
+                {conceptsLoading ? (
+                  <div className="space-y-2" aria-label="Loading topics">
+                    <div className="skeleton h-10 w-full rounded-lg" />
+                    <div className="skeleton h-10 w-11/12 rounded-lg" />
+                  </div>
+                ) : conceptsError ? (
+                  <p className="text-xs text-amber-700">
+                    Couldn&apos;t load topics ({conceptsError}) — practice will use all topics.{" "}
+                    <button onClick={fetchConcepts} className="font-medium underline">Retry</button>
+                  </p>
+                ) : totalTopics === 0 ? (
+                  <p className="text-xs text-stone-500">No topics yet — upload and process a PDF first. Practice will use adaptive defaults.</p>
+                ) : grouped.length === 0 ? (
+                  <p className="text-xs text-stone-500">No topics match &quot;{topicSearch}&quot;.</p>
+                ) : (
+                  <ul className="max-h-72 space-y-2 overflow-y-auto pr-0.5">
+                    {grouped.map((g) => {
+                      const allOn = g.items.every((c) => selectedIds.has(c.conceptId));
+                      const someOn = !allOn && g.items.some((c) => selectedIds.has(c.conceptId));
+                      const isCollapsed = collapsed[g.key] ?? false;
+                      return (
+                        <li key={g.key} className="overflow-hidden rounded-xl border border-stone-200 bg-white">
+                          <div className="flex items-center gap-2.5 px-3 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={allOn}
+                              ref={(el) => {
+                                if (el) el.indeterminate = someOn;
+                              }}
+                              onChange={() => toggleMaterial(g.items)}
+                              disabled={generating}
+                              aria-label={`Select all topics from ${g.materialName}`}
+                              className="h-4 w-4 shrink-0 accent-sky-600"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setCollapsed((p) => ({ ...p, [g.key]: !isCollapsed }))}
+                              aria-expanded={!isCollapsed}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-stone-800" title={g.materialName}>
+                                {g.materialName}
+                              </span>
+                              <span className="tnum shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-semibold text-stone-500">
+                                {g.items.filter((c) => selectedIds.has(c.conceptId)).length}/{g.items.length}
+                              </span>
+                              <span aria-hidden className={`text-xs text-stone-400 transition-transform ${isCollapsed ? "" : "rotate-180"}`}>▾</span>
+                            </button>
+                          </div>
+                          {!isCollapsed && (
+                            <ul className="space-y-0.5 border-t border-stone-100 px-3 py-2">
+                              {g.items.map((c) => {
+                                const on = selectedIds.has(c.conceptId);
+                                return (
+                                  <li key={c.conceptId}>
+                                    <label className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors ${on ? "hover:bg-sky-50" : "opacity-70 hover:bg-stone-100"}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={on}
+                                        onChange={() => toggleConcept(c.conceptId)}
+                                        disabled={generating}
+                                        className="h-4 w-4 shrink-0 accent-sky-600"
+                                      />
+                                      <span className="min-w-0 flex-1 truncate text-[13px] text-stone-800" title={c.description ?? c.conceptName}>
+                                        {c.conceptName}
+                                      </span>
+                                      <Badge tone={topicTone(c.currentScore)}>{topicLabel(c.currentScore)}</Badge>
+                                    </label>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            <p className="mt-4 text-sm font-semibold text-stone-900">3 · How many questions?</p>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
                 <button
@@ -930,12 +1272,12 @@ export default function PracticeClient({
                   −
                 </button>
                 <span className="tnum min-w-16 text-center text-sm font-semibold text-stone-900" aria-live="polite">
-                  {practiceCount} {practiceCount === 1 ? "question" : "questions"}
+                  {partialTopicSelection ? clampedForSelection : practiceCount} {(partialTopicSelection ? clampedForSelection : practiceCount) === 1 ? "question" : "questions"}
                 </span>
                 <button
                   type="button"
                   onClick={() => setPracticeCount((c) => clampPracticeCount(c + 1))}
-                  disabled={generating || practiceCount >= PRACTICE_MAX_COUNT}
+                  disabled={generating || practiceCount >= PRACTICE_MAX_COUNT || (partialTopicSelection && clampedForSelection >= effectiveMax)}
                   aria-label="More questions"
                   className="flex h-7 w-7 items-center justify-center rounded-md text-base font-semibold text-stone-600 transition-colors hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -959,9 +1301,9 @@ export default function PracticeClient({
                   </button>
                 ))}
               </div>
-              <Button onClick={startAssignment} disabled={generating}>
+              <Button onClick={startAssignment} disabled={generating || selectedTypes.size === 0 || (totalTopics > 0 && selectedCount === 0)}>
                 {generating && <Spinner className="text-white" />}
-                {generating ? "Building your assignment…" : "Start assignment"}
+                {generating ? "Building your assignment…" : partialTopicSelection || partialTypeSelection ? `Start assignment (${partialTopicSelection ? clampedForSelection : clampPracticeCount(practiceCount)}q)` : "Start assignment"}
               </Button>
               <LinkButton href={`/projects/${projectId}/quiz`} variant="secondary">
                 Take a quiz instead

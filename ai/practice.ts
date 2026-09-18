@@ -127,6 +127,47 @@ export function defaultPracticeComposition(count: number): PracticeQuestionType[
 }
 
 /**
+ * Lenient question-type filter parse — unknown/empty falls back to all types.
+ * Accepts the 4 PracticeQuestionType values (case-insensitive). Pure.
+ */
+export function clampPracticeTypes(types?: unknown): PracticeQuestionType[] {
+  if (!Array.isArray(types) || types.length === 0) return [...PRACTICE_QUESTION_TYPES];
+  const out: PracticeQuestionType[] = [];
+  for (const t of types) {
+    if (typeof t !== "string") continue;
+    const upper = t.toUpperCase() as PracticeQuestionType;
+    if ((PRACTICE_QUESTION_TYPES as string[]).includes(upper) && !out.includes(upper)) {
+      out.push(upper);
+    }
+  }
+  return out.length > 0 ? out : [...PRACTICE_QUESTION_TYPES];
+}
+
+/**
+ * Composition honoring the learner's type checkboxes (e.g. "only open-ended").
+ * Filters the designed slot cycle to the allowed types and cycles it, so a
+ * full selection behaves exactly like defaultPracticeComposition while a
+ * subset (e.g. only OPEN_ENDED) yields a uniform paper. Pure.
+ */
+export function compositionForTypes(count: number, allowed?: PracticeQuestionType[]): PracticeQuestionType[] {
+  const n = clampPracticeCount(count);
+  const types = allowed && allowed.length > 0 ? allowed : [...PRACTICE_QUESTION_TYPES];
+  const fullSet = types.length === PRACTICE_QUESTION_TYPES.length;
+  if (n === 1) {
+    if (fullSet) return ["OPEN_ENDED"];
+    // Single-question paper with a filter: honor it (OPEN_ENDED preferred
+    // when included, otherwise the first allowed type in section order).
+    if (types.includes("OPEN_ENDED")) return ["OPEN_ENDED"];
+    const order: PracticeQuestionType[] = ["MCQ", "TRUE_FALSE", "ONE_WORD", "OPEN_ENDED"];
+    for (const t of order) if (types.includes(t)) return [t];
+    return [types[0]];
+  }
+  const filtered = PRACTICE_SLOT_CYCLE.filter((t) => types.includes(t));
+  const cycle = filtered.length > 0 ? filtered : [...PRACTICE_SLOT_CYCLE];
+  return Array.from({ length: n }, (_, i) => cycle[i % cycle.length]);
+}
+
+/**
  * Deal composition slots to already-priority-ordered concepts (weakest first).
  * Concepts that need free text — active misconception or an explanation-heavy
  * intent (EXPLAIN / WHY / TEACH_BACK) — are swapped into short/descriptive

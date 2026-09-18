@@ -8,6 +8,7 @@ import {
   PRACTICE_EVALUATION_SYSTEM_PROMPT,
   PRACTICE_GENERATION_SYSTEM_PROMPT,
   PRACTICE_MAX_COUNT,
+  PRACTICE_QUESTION_TYPES,
   PracticeEvaluationSchema,
   PracticeGenerationSchema,
   assignPracticeSlots,
@@ -16,7 +17,8 @@ import {
   calibrateConfidence,
   clampPracticeCount,
   clampPracticeLevel,
-  defaultPracticeComposition,
+  clampPracticeTypes,
+  compositionForTypes,
   isShortAnswerCorrect,
   practiceSectionFor,
   validatePracticeEvaluationOutput,
@@ -528,17 +530,35 @@ async function buildPracticeConceptStats(
   return { stats, masteryByConcept, materialHintByConcept, prerequisiteForWeak };
 }
 
+export interface PracticeScopeFilter {
+  conceptIds?: string[];
+  questionTypes?: PracticeQuestionType[];
+}
+
 export async function selectPracticeConcepts(
   projectId: string,
   userId: string,
   count: number = DEFAULT_PRACTICE_SIZE,
-  level: PracticeLevel = "MIXED"
+  level: PracticeLevel = "MIXED",
+  scope?: PracticeScopeFilter
 ): Promise<PracticeCandidate[]> {
   const db = await getDb();
   const { data: concepts } = await db.from("concepts").select("id, name, description, source_material_id").eq("project_id", projectId);
   const allRows = (concepts ?? []) as Array<ConceptRow>;
   const sourced = allRows.filter((c) => c.source_material_id !== null);
-  const rows: ConceptRow[] = (sourced.length > 0 ? sourced : allRows).map(({ source_material_id: _o, ...c }) => c as ConceptRow);
+  let scopedAll: ConceptRow[] = sourced.length > 0 ? sourced : allRows;
+  // Topic scoping (checkbox selection from the Practice setup card): narrow the
+  // adaptive pool to the chosen concepts. Adaptive scoring still applies
+  // *within* the subset, so weakest-first keeps working.
+  const conceptSet =
+    scope?.conceptIds && scope.conceptIds.length > 0 ? new Set(scope.conceptIds) : null;
+  if (conceptSet) {
+    scopedAll = scopedAll.filter((c) => conceptSet.has(c.id));
+    if (scopedAll.length === 0) {
+      throw new Error("No concepts match your selection — pick at least one topic with concepts");
+    }
+  }
+  const rows: ConceptRow[] = scopedAll.map(({ source_material_id: _o, ...c }) => c as ConceptRow);
   // Re-attach source for hints
   const byId = new Map(allRows.map((c) => [c.id, c]));
   for (const r of rows) (r as ConceptRow).source_material_id = byId.get(r.id)?.source_material_id ?? null;
@@ -580,8 +600,13 @@ export async function selectPracticeConcepts(
   candidates.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   const picked = candidates.slice(0, Math.min(count, candidates.length));
   // Deal paper slots weakest-first: Section A (quick checks on shaky ground)
-  // through Section C (descriptive stretch on solid ground).
-  return assignPracticeSlots(picked, defaultPracticeComposition(picked.length));
+  // through Section C (descriptive stretch on solid ground). When the learner
+  // filtered question types (e.g. only OPEN_ENDED), the composition honors it.
+  const allowed =
+    scope?.questionTypes && scope.questionTypes.length > 0
+      ? clampPracticeTypes(scope.questionTypes)
+      : [...PRACTICE_QUESTION_TYPES];
+  return assignPracticeSlots(picked, compositionForTypes(picked.length, allowed));
 }
 
 /** Best-effort material excerpts per concept for grounding (keyword ilike, like subconcepts). */
@@ -675,7 +700,7 @@ export function gatePracticeQuestionForReview(
 
 export async function generatePracticeAssignment(
   projectId: string,
-  options?: { count?: number; level?: unknown }
+  options?: { count?: number; level?: unknown; conceptIds?: string[]; questionTypes?: PracticeQuestionType[] }
 ): Promise<{
   assignment: { id: string; project_id: string; status: string; created_at: string; focus_summary: string | null };
   questions: TakingPracticeQuestion[];
@@ -695,8 +720,20 @@ export async function generatePracticeAssignment(
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
   const count = clampPracticeCount(options?.count);
   const level = clampPracticeLevel(options?.level);
+  const scopeConceptIds =
+    Array.isArray(options?.conceptIds) && options.conceptIds.length > 0
+      ? [...new Set(options.conceptIds.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim()))].slice(0, 200)
+      : undefined;
+  const scopeTypes =
+    Array.isArray(options?.questionTypes) && options.questionTypes.length > 0
+      ? clampPracticeTypes(options.questionTypes)
+      : undefined;
+  const hasScope = !!scopeConceptIds || (!!scopeTypes && scopeTypes.length < PRACTICE_QUESTION_TYPES.length);
 
   // Idempotency: recent assignment with zero responses is reused (double-click guard).
+  // Scoped (topic/type-filtered) requests always generate fresh — reusing an
+  // unscoped recent paper would return the wrong topics/types (same as quiz).
+  if (!hasScope) {
   try {
     const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data: recent } = await db
@@ -745,8 +782,12 @@ export async function generatePracticeAssignment(
     if (msg.includes("007_practice") || msg.includes("008_practice_mcq") || msg.includes("009_practice_sections")) throw e;
     // best-effort
   }
+  } // end if (!hasScope) idempotency guard
 
-  const selected = await selectPracticeConcepts(projectId, userId, count, level);
+  const selected = await selectPracticeConcepts(projectId, userId, count, level, {
+    conceptIds: scopeConceptIds,
+    questionTypes: scopeTypes,
+  });
 
   // Misconception notes per concept for the prompt.
   let miscByConcept = new Map<string, string[]>();
@@ -866,6 +907,8 @@ export async function generatePracticeAssignment(
     generated_at: new Date().toISOString(),
     learning_goal: learningGoal,
     level,
+    scopeConceptCount: scopeConceptIds?.length ?? null,
+    scopeTypes: scopeTypes ?? null,
     concepts: selected.map((s) => ({
       concept_id: s.id,
       name: s.name,
@@ -1237,25 +1280,56 @@ export async function submitPracticeResponse(
     await db.from("practice_responses").update({ confidence: conf, response: trimmed }).eq("id", responseId);
   }
 
-  // Concept context for the evaluation prompt.
+  // Fast path: deterministic Section A/B grading needs only the concept name
+  // (for feedback copy) — no related-concept scan, no chunk retrieval, no LLM.
+  // This keeps MCQ / True-False / One-word checking instant.
+  const requestId = crypto.randomUUID();
+  const start = Date.now();
+  let evaluation: PracticeEvaluation;
+  if (isDeterministic) {
+    let conceptName = "Unknown";
+    try {
+      const { data: concept } = await db.from("concepts").select("name").eq("id", qRow.concept_id).maybeSingle();
+      if (concept) conceptName = (concept as { name: string }).name;
+    } catch {
+      // best-effort
+    }
+    const expected = (qRow.correct_answer ?? "").trim();
+    if (!expected) throw new Error("This practice question is missing its answer key — please start a new assignment.");
+    const isCorrect =
+      qType === "ONE_WORD"
+        ? isShortAnswerCorrect(trimmed, [qRow.correct_answer, ...(qRow.acceptable_answers ?? [])])
+        : trimmed === expected;
+    evaluation = buildObjectiveEvaluation({
+      isCorrect,
+      conceptName,
+      picked: trimmed,
+      expected,
+      explanation: qRow.explanation,
+    });
+    await db.from("practice_responses").update({ score: evaluation.score, evaluation }).eq("id", responseId);
+  } else {
+  // Open-ended needs full context for the evaluation prompt.
   let conceptName = "Unknown";
   let conceptDesc: string | null = null;
   let relatedNames: string[] = [];
   let materialEvidence: string[] = [];
   try {
-    const { data: concept } = await db.from("concepts").select("name, description").eq("id", qRow.concept_id).maybeSingle();
-    if (concept) {
-      conceptName = (concept as { name: string }).name;
-      conceptDesc = (concept as { description: string | null }).description;
+    const [conceptRes, relRes] = await Promise.all([
+      db.from("concepts").select("name, description").eq("id", qRow.concept_id).maybeSingle(),
+      (async () => {
+        const relIds = (qRow.related_concept_ids ?? []) as string[];
+        if (relIds.length > 0) {
+          return db.from("concepts").select("name").in("id", relIds);
+        }
+        return db.from("concepts").select("name").eq("project_id", projectId).neq("id", qRow.concept_id).limit(8);
+      })(),
+    ]);
+    if (conceptRes.data) {
+      conceptName = ((conceptRes.data as { name: string }).name);
+      conceptDesc = ((conceptRes.data as { description: string | null }).description);
     }
-    const relIds = (qRow.related_concept_ids ?? []) as string[];
-    if (relIds.length > 0) {
-      const { data: rels } = await db.from("concepts").select("name").in("id", relIds);
-      relatedNames = ((rels ?? []) as Array<{ name: string }>).map((r) => r.name);
-    } else {
-      const { data: others } = await db.from("concepts").select("name").eq("project_id", projectId).neq("id", qRow.concept_id).limit(8);
-      relatedNames = ((others ?? []) as Array<{ name: string }>).map((r) => r.name);
-    }
+    relatedNames = (((relRes as { data: unknown }).data ?? []) as Array<{ name: string }>).map((r) => r.name);
     const keywords = conceptName.split(/\s+/).filter((w) => w.length > 3).slice(0, 3);
     if (keywords.length > 0) {
       const orFilter = keywords.map((k) => `content.ilike.%${k}%`).join(",");
@@ -1276,28 +1350,6 @@ export async function submitPracticeResponse(
     materialEvidence,
     studentResponse: trimmed,
   });
-
-  const requestId = crypto.randomUUID();
-  const start = Date.now();
-  let evaluation: PracticeEvaluation;
-  if (isDeterministic) {
-    // Deterministic grading — no LLM call, so Section A/B evaluation can
-    // never be "temporarily unavailable" (same pattern as quiz MCQ).
-    const expected = (qRow.correct_answer ?? "").trim();
-    if (!expected) throw new Error("This practice question is missing its answer key — please start a new assignment.");
-    const isCorrect =
-      qType === "ONE_WORD"
-        ? isShortAnswerCorrect(trimmed, [qRow.correct_answer, ...(qRow.acceptable_answers ?? [])])
-        : trimmed === expected;
-    evaluation = buildObjectiveEvaluation({
-      isCorrect,
-      conceptName,
-      picked: trimmed,
-      expected,
-      explanation: qRow.explanation,
-    });
-    await db.from("practice_responses").update({ score: evaluation.score, evaluation }).eq("id", responseId);
-  } else {
   try {
     const { data: raw, usage } = await aiService.generateStructuredWithUsage<unknown>({
       systemPrompt: PRACTICE_EVALUATION_SYSTEM_PROMPT,
