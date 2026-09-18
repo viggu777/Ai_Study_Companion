@@ -1018,29 +1018,36 @@ async function tryCompleteQuizIfNeeded(projectId: string, quizId: string, userId
     }
     if (updErr) console.warn("Quiz complete update error (may be race):", updErr);
 
-    // Trigger mastery update workflow (Inngest step function chained after QUIZ_COMPLETED)
-    // On Vercel serverless a setTimeout fallback never runs after the response
-    // is sent (function frozen). So on send failure, process inline within this
-    // request — same pattern as services/material.service.ts:237.
+    // Trigger mastery update workflow (Inngest step function chained after QUIZ_COMPLETED).
+    // Mastery itself ALWAYS runs inline as well: updateMasteryForQuiz is
+    // idempotent per (quizId, conceptId), so a later Inngest delivery is a
+    // safe no-op. This heals the "send succeeds but no function ever
+    // processes it" case (app not synced, mismatched INNGEST_* keys) that
+    // used to leave mastery at 0 after a finished quiz — same pattern as
+    // retryMaterial in services/material.service.ts.
+    let inngestAccepted = false;
     try {
       await inngest.send({ name: "quiz/completed", data: { quizId, projectId, userId, spaceId } });
+      inngestAccepted = true;
     } catch (e) {
-      console.error("Inngest send quiz/completed failed, fallback to direct mastery update:", e);
+      console.error("Inngest send quiz/completed failed, will update mastery inline:", e);
+    }
+    try {
+      const { updateMasteryForQuiz } = await import("@/services/mastery.service");
+      await updateMasteryForQuiz({ quizId, projectId, userId, spaceId });
+    } catch (err) {
+      console.error("Inline mastery update failed:", err);
+    }
+    // Recommendation: prefer the event chain when Inngest accepted the quiz
+    // event (avoids a duplicate ACTIVE row + LLM cost). When Inngest is
+    // provably unreachable, generate inline so a finished quiz still yields
+    // a next step — force:true, maintenance mode covers all-strong results.
+    if (!inngestAccepted) {
       try {
-        const { updateMasteryForQuiz } = await import("@/services/mastery.service");
-        await updateMasteryForQuiz({ quizId, projectId, userId, spaceId });
-        // The Inngest mastery-update function would normally chain
-        // mastery/updated → recommendation-generate from here. Since Inngest
-        // is unreachable, chain directly so recommendations are not dropped.
-        // force:true — maintenance mode still yields an ACTIVE next-step.
-        try {
-          const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
-          await refreshRecommendationAfterTask({ projectId, userId, spaceId, trigger: "quiz/completed-fallback", force: true });
-        } catch (recErr) {
-          console.error("Fallback recommendation generation failed:", recErr);
-        }
-      } catch (err) {
-        console.error("Fallback mastery update failed:", err);
+        const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+        await refreshRecommendationAfterTask({ projectId, userId, spaceId, trigger: "quiz/completed-fallback", force: true });
+      } catch (recErr) {
+        console.error("Fallback recommendation generation failed:", recErr);
       }
     }
 

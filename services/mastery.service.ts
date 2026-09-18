@@ -262,6 +262,44 @@ export async function updateMasteryForQuiz(params: {
 }
 
 /**
+ * Backfill mastery for quizzes that completed while the background worker
+ * was unreachable (event accepted but never processed, or an older build
+ * without the inline update). Idempotent per (quizId, conceptId) — already
+ * processed concepts are skipped, so re-running is always safe.
+ *
+ * Returns how many quizzes were checked and how many concept rows were
+ * (re)computed. Best-effort per quiz: one bad quiz never blocks the rest.
+ */
+export async function backfillMissingQuizMastery(
+  projectId: string,
+  userId: string,
+  limit = 10
+): Promise<{ checked: number; updated: number }> {
+  const db = getServiceDb();
+  const { data: project } = await db.from("projects").select("space_id").eq("id", projectId).eq("user_id", userId).maybeSingle();
+  const spaceId = (project as { space_id: string } | null)?.space_id ?? null;
+  const { data: quizzes } = await db
+    .from("quizzes")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("user_id", userId)
+    .eq("status", "completed")
+    .order("completed_at", { ascending: false })
+    .limit(Math.max(1, Math.min(limit, 25)));
+  const rows = (quizzes ?? []) as Array<{ id: string }>;
+  let updated = 0;
+  for (const q of rows) {
+    try {
+      const r = await updateMasteryForQuiz({ quizId: q.id, projectId, userId, spaceId });
+      updated += r.updated.length;
+    } catch (e) {
+      console.warn(`Mastery backfill skipped quiz ${q.id}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+  return { checked: rows.length, updated };
+}
+
+/**
  * Practice evidence — deterministic single-concept update.
  * Same 0.7/0.3 formula as quizzes; the LLM only produced the evidence score.
  *

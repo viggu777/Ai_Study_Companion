@@ -253,13 +253,18 @@ export default function MasteryClient({
               <p className="mt-0.5 text-sm text-stone-500">
                 {summary.tested}/{summary.total} concepts tested · {coverage}% coverage
               </p>
+              {coverage === 0 && summary.total > 0 && (
+                <p className="mt-1 text-xs leading-relaxed text-sky-700">
+                  {summary.total} concept{summary.total === 1 ? "" : "s"} ready from your materials — answer a quiz, practice, or flashcard to score your first one.
+                </p>
+              )}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {weakest && weakest.currentScore !== null ? (
-                  <Link href={`/projects/${projectId}/quiz`} className="inline-flex items-center gap-1.5 rounded-lg bg-stone-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-stone-800">
+                  <Link href={`/projects/${projectId}/quiz`} className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700">
                     Quiz weakest: {weakest.conceptName.slice(0, 22)}{weakest.conceptName.length > 22 ? "…" : ""}
                   </Link>
                 ) : (
-                  <Link href={`/projects/${projectId}/quiz`} className="inline-flex items-center gap-1.5 rounded-lg bg-stone-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-stone-800">
+                  <Link href={`/projects/${projectId}/quiz`} className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700">
                     Start first quiz
                   </Link>
                 )}
@@ -276,6 +281,11 @@ export default function MasteryClient({
           <div className="min-w-0 flex-1 space-y-3">
             {/* Level distribution */}
             <div>
+              {coverage === 0 ? (
+                <div className="flex h-3 items-center justify-center rounded-full border border-dashed border-sky-600/30 bg-sky-50/60" role="img" aria-label="No mastery data yet — take your first quiz to fill this map">
+                  <span className="px-2 text-[10px] font-medium text-sky-700">Your first quiz lights up this map</span>
+                </div>
+              ) : (
               <div className="flex h-3 overflow-hidden rounded-full bg-stone-100" role="img" aria-label={`Distribution: ${summary.distribution.MASTERED} mastered, ${summary.distribution.PROFICIENT} proficient, ${summary.distribution.DEVELOPING} developing, ${summary.distribution.EMERGING} emerging, ${summary.distribution.UNTESTED} not started`}>
                 {(Object.keys(LEVEL_STYLE) as MasteryLevel[]).map((lv) => {
                   const n = summary.distribution[lv];
@@ -283,6 +293,7 @@ export default function MasteryClient({
                   return <div key={lv} className={LEVEL_STYLE[lv].dot} style={{ width: `${(n / distTotal) * 100}%` }} title={`${LEVEL_STYLE[lv].label}: ${n}`} />;
                 })}
               </div>
+              )}
               <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-stone-600">
                 {(Object.keys(LEVEL_STYLE) as MasteryLevel[]).map((lv) => (
                   <button key={lv} type="button" onClick={() => setLevel(level === lv ? "ALL" : lv)} className={`inline-flex items-center gap-1.5 rounded-full px-1 py-0.5 hover:bg-stone-100 ${level === lv ? "font-semibold text-stone-900" : ""}`} title={`Filter: ${LEVEL_STYLE[lv].label}`}>
@@ -368,7 +379,7 @@ export default function MasteryClient({
         </select>
         <div className="flex rounded-xl border border-stone-300 bg-white p-1" role="group" aria-label="Group concepts by">
           {(["LEVELS", "MATERIALS"] as ViewMode[]).map((v) => (
-            <button key={v} type="button" onClick={() => setView(v)} aria-pressed={view === v} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${view === v ? "bg-stone-900 text-white" : "text-stone-500 hover:bg-stone-100"}`}>
+            <button key={v} type="button" onClick={() => setView(v)} aria-pressed={view === v} className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${view === v ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"}`}>
               {v === "LEVELS" ? "By level" : "By material"}
             </button>
           ))}
@@ -402,7 +413,7 @@ export default function MasteryClient({
                           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${lv.pill}`}>{lv.label}</span>
                         </div>
                         <div className="mt-1.5 flex items-center gap-2">
-                          <span className="tnum text-2xl font-bold tracking-tight text-stone-900">{score !== null ? Math.round(score) : "—"}</span>
+                          <span className={`tnum text-2xl font-bold tracking-tight ${score !== null ? "text-stone-900" : "text-stone-300"}`}>{score !== null ? Math.round(score) : "–"}</span>
                           <span className="text-xs text-stone-400">/100</span>
                           {deltaChip(e.delta)}
                           <span className={`ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${tm.chip}`}>

@@ -1,6 +1,6 @@
 import { getCurrentUser } from "@/lib/auth/getCurrentUser";
 import { getProject } from "@/services/project.service";
-import { getMasteryOverview } from "@/services/mastery.service";
+import { backfillMissingQuizMastery, getMasteryOverview } from "@/services/mastery.service";
 import { listMaterials } from "@/services/material.service";
 import { notFound } from "next/navigation";
 import Link from "next/link";
@@ -34,6 +34,24 @@ export default async function MasteryPage({
   let error: string | null = null;
   try {
     overview = await overviewPromise;
+    // Self-heal: a zero-evidence map with finished quizzes means those
+    // completions never reached the mastery worker (see backfill helper).
+    // Recompute inline (idempotent) and re-read once so the page reflects
+    // real progress instead of a stuck 0/8.
+    if (
+      overview &&
+      overview.summary.quizEvents === 0 &&
+      overview.summary.practiceEvents === 0 &&
+      overview.summary.flashcardReviews === 0
+    ) {
+      try {
+        const user = await getCurrentUser();
+        const healed = await backfillMissingQuizMastery(projectId, user.id, 10);
+        if (healed.updated > 0) overview = await getMasteryOverview(projectId);
+      } catch {
+        // best-effort — the zero-state UI below still renders fine
+      }
+    }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
