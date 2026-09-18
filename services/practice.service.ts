@@ -1561,8 +1561,8 @@ async function tryCompletePracticeIfNeeded(
     console.error("Inngest practice/completed failed, fallback direct recommendation:", e);
     // Serverless-safe inline fallback (setTimeout never fires on Vercel).
     try {
-      const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-      await generateRecommendationForProject({ projectId, userId, spaceId });
+      const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+      await refreshRecommendationAfterTask({ projectId, userId, spaceId, trigger: "practice/completed-fallback", force: true });
     } catch (err) {
       console.error("Fallback recommendation after practice failed:", err);
     }

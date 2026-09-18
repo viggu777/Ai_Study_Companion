@@ -1032,9 +1032,10 @@ async function tryCompleteQuizIfNeeded(projectId: string, quizId: string, userId
         // The Inngest mastery-update function would normally chain
         // mastery/updated → recommendation-generate from here. Since Inngest
         // is unreachable, chain directly so recommendations are not dropped.
+        // force:true — maintenance mode still yields an ACTIVE next-step.
         try {
-          const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-          await generateRecommendationForProject({ projectId, userId, spaceId });
+          const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+          await refreshRecommendationAfterTask({ projectId, userId, spaceId, trigger: "quiz/completed-fallback", force: true });
         } catch (recErr) {
           console.error("Fallback recommendation generation failed:", recErr);
         }

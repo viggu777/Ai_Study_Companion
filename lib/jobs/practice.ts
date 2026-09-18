@@ -13,14 +13,10 @@ export const practiceCompletedFunction = (inngest as unknown as { createFunction
     if (!assignmentId || !projectId || !userId) throw new Error("Missing assignmentId/projectId/userId in practice/completed event");
 
     const result = (await step.run("generate-recommendation", async () => {
-      const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-      try {
-        return await generateRecommendationForProject({ projectId, userId, spaceId: spaceId ?? null });
-      } catch (err) {
-        // No weak concepts (all strong after practice) is a healthy no-op, not a failure.
-        console.log("practice recommendation skipped:", err instanceof Error ? err.message : String(err));
-        return null;
-      }
+      const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+      // Maintenance mode guarantees an ACTIVE row even when practice left
+      // nothing weak — a completed practice always yields a next step.
+      return await refreshRecommendationAfterTask({ projectId, userId, spaceId: spaceId ?? null, trigger: "practice/completed", force: true });
     })) as { id: string; title: string } | null;
 
     return { assignmentId, projectId, recommendation: result };

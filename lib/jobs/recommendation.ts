@@ -13,8 +13,8 @@ export const recommendationGenerateFunction = (inngest as unknown as { createFun
     if (!projectId || !userId) throw new Error("Missing projectId/userId in mastery/updated event");
 
     const result = (await step.run("generate-recommendation", async () => {
-      const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-      return generateRecommendationForProject({ projectId, userId, spaceId: spaceId ?? null });
+      const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+      return refreshRecommendationAfterTask({ projectId, userId, spaceId: spaceId ?? null, trigger: "mastery/updated", force: true });
     })) as { id: string; title: string } | null;
 
     return { projectId, recommendation: result };

@@ -13,26 +13,23 @@ export const masteryUpdateFunction = (inngest as unknown as { createFunction: (.
     })) as { updated: unknown[]; skipped: string[] };
 
     // Chain to recommendation workflow per architecture §13: Quiz Completed → Evaluate → Update Mastery → Detect Weakness → Generate Recommendation
-    if (result.updated.length > 0) {
-      try {
-        await step.run("trigger-recommendation", async () => {
-          const { inngest: client } = await import("./client");
-          await (client as unknown as { send: (p: unknown) => Promise<void> }).send({
-            name: "mastery/updated",
-            data: { projectId, userId, spaceId: spaceId ?? null, quizId, updated: result.updated },
-          });
+    // Always chain (even when mastery had nothing new / quiz was all-strong):
+    // generation falls back to maintenance/stretch mode so an ACTIVE
+    // recommendation still appears after the task instead of going quiet.
+    try {
+      await step.run("trigger-recommendation", async () => {
+        const { inngest: client } = await import("./client");
+        await (client as unknown as { send: (p: unknown) => Promise<void> }).send({
+          name: "mastery/updated",
+          data: { projectId, userId, spaceId: spaceId ?? null, quizId, updated: result.updated },
         });
-      } catch (e) {
-        console.warn("Failed to send mastery/updated event, fallback direct generation:", e);
-        await step.run("fallback-recommendation", async () => {
-          const { generateRecommendationForProject } = await import("@/services/recommendation.service");
-          try {
-            await generateRecommendationForProject({ projectId, userId, spaceId: spaceId ?? null });
-          } catch (err) {
-            console.error("Fallback recommendation generation failed:", err);
-          }
-        });
-      }
+      });
+    } catch (e) {
+      console.warn("Failed to send mastery/updated event, fallback direct generation:", e);
+      await step.run("fallback-recommendation", async () => {
+        const { refreshRecommendationAfterTask } = await import("@/services/recommendation.service");
+        await refreshRecommendationAfterTask({ projectId, userId, spaceId: spaceId ?? null, trigger: "quiz/completed-fallback", force: true });
+      });
     }
 
     return { quizId, updated: result.updated, skipped: result.skipped };

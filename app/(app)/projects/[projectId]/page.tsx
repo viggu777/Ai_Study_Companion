@@ -122,7 +122,7 @@ export default async function ProjectPage({
       label: "Recommendations",
       stage: "Next step",
       status:
-        dashboardRecs.length === 0 ? "Appear when concepts weaken" : `${dashboardRecs.length} active`,
+        dashboardRecs.length === 0 ? "Complete any task for a next step" : `${dashboardRecs.length} active`,
     },
   ] as const;
 

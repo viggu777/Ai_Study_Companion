@@ -801,6 +801,11 @@ async function persistAssistant(
     entityId: (msg as { id: string } | null)?.id ?? conversationId,
     metadata: { grounded: response.grounded, confidence: response.confidence, citations: response.citations.length },
   });
+  // Tutor exchanges are learning tasks too — keep an ACTIVE next-step around
+  // without slowing the answer. Throttled inside (fresh ACTIVE <15 min reused).
+  void import("@/services/recommendation.service")
+    .then((m) => m.refreshRecommendationAfterTask({ projectId, userId, spaceId, trigger: "tutor/response" }))
+    .catch((e) => console.warn("Tutor recommendation refresh skipped:", e instanceof Error ? e.message : String(e)));
   return { ...response, conversationId };
 }
 

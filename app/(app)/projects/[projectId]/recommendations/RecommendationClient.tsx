@@ -114,7 +114,7 @@ export default function RecommendationClient({ projectId }: { projectId: string 
         <EmptyState
           icon={<SparkIcon className="h-5 w-5" />}
           title={filter === "ALL" ? "No recommendations yet" : `No ${filter.toLowerCase()} recommendations`}
-          description="Complete a quiz that leaves a concept weak — a specific recommendation naming that concept appears after mastery updates."
+          description="Complete any task — quiz, practice, flashcards, or tutor — and a specific next-step naming your concepts appears here. On track? You'll get a stretch task instead."
         />
       ) : (
         <div className="space-y-3">

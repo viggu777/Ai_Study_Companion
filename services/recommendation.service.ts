@@ -49,9 +49,18 @@ export async function generateRecommendationForProject(params: {
   projectId: string;
   userId: string;
   spaceId?: string | null;
+  /**
+   * When false (default), a fresh ACTIVE recommendation (<15 min old) is
+   * returned as-is instead of spending another LLM call — this keeps
+   * high-frequency tasks (flashcard flips, tutor messages) from spamming.
+   * Pass force:true for major completions (quiz / practice) that deserve a
+   * fresh next-step grounded in the just-finished state.
+   */
+  force?: boolean;
 }): Promise<{ id: string; title: string; action_items: string[] } | null> {
   const { projectId, userId } = params;
   const spaceId = params.spaceId ?? null;
+  const force = params.force ?? false;
   const db = getServiceDb();
 
   // Verify ownership (service DB bypasses RLS, so check manually)
@@ -89,19 +98,50 @@ export async function generateRecommendationForProject(params: {
   const trendByConcept = new Map<string, Trend>();
   for (const g of growth) trendByConcept.set(g.conceptId, g.trend);
 
-  const weakConcepts = conceptRows
-    .map((c) => {
-      const score = masteryMap.has(c.id) ? masteryMap.get(c.id)! : 0;
-      const trend = trendByConcept.get(c.id) ?? "STABLE";
-      const isWeak = trend === "REQUIRES_ATTENTION" || score < 60;
-      return { conceptId: c.id, name: c.name, description: c.description, masteryScore: score, trend, isWeak };
-    })
-    .filter((c) => c.isWeak);
-
-  // If no weak concepts, we still generate? Spec wants recommendation when something weak; if nothing weak, skip to avoid noise
+  const scoredConcepts = conceptRows.map((c) => {
+    const score = masteryMap.has(c.id) ? masteryMap.get(c.id)! : 0;
+    const trend = trendByConcept.get(c.id) ?? "STABLE";
+    const isWeak = trend === "REQUIRES_ATTENTION" || score < 60;
+    return { conceptId: c.id, name: c.name, description: c.description, masteryScore: score, trend, isWeak };
+  });
+  let weakConcepts = scoredConcepts.filter((c) => c.isWeak);
+  // Maintenance / stretch mode: nothing is weak (user did well or is on
+  // track) — still produce an ACTIVE next-step so the dashboard /
+  // recommendations page never goes empty after a completed task. Focus
+  // the relatively-weakest concepts so output stays grounded and specific.
+  let mode: "weak" | "maintenance" = "weak";
   if (weakConcepts.length === 0) {
-    console.log("generateRecommendation: no weak concepts, skipping generation for", projectId);
-    return null;
+    if (scoredConcepts.length === 0) {
+      console.log("generateRecommendation: no concepts at all, skipping generation for", projectId);
+      return null;
+    }
+    mode = "maintenance";
+    weakConcepts = [...scoredConcepts]
+      .sort((a, b) => a.masteryScore - b.masteryScore || a.name.localeCompare(b.name))
+      .slice(0, Math.min(3, scoredConcepts.length));
+    console.log(`generateRecommendation: no weak concepts for ${projectId} — maintenance mode on ${weakConcepts.map((w) => w.name).join(", ")}`);
+  }
+
+  // De-dup guard (non-forced refreshes only): a fresh ACTIVE (<15 min) already
+  // satisfies "active recommendations after doing any task" — reuse it.
+  if (!force) {
+    try {
+      const { data: fresh } = await db
+        .from("recommendations")
+        .select("id, title, action_items, created_at")
+        .eq("project_id", projectId)
+        .eq("user_id", userId)
+        .eq("status", "ACTIVE")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const row = fresh as { id: string; title: string; action_items: string[]; created_at: string } | null;
+      if (row && Date.now() - new Date(row.created_at).getTime() < 15 * 60 * 1000) {
+        return { id: row.id, title: row.title, action_items: row.action_items as string[] };
+      }
+    } catch {
+      // best-effort — fall through to generation
+    }
   }
 
   // Recent mistakes: last 5 answers incorrect or score <60, join to concept name
@@ -301,6 +341,7 @@ export async function generateRecommendationForProject(params: {
     practiceContext,
     misconceptionContext,
     prerequisiteNotes,
+    mode,
   });
 
   const requestId = crypto.randomUUID();
@@ -405,10 +446,38 @@ export async function generateRecommendationForProject(params: {
     eventType: "RECOMMENDATION_GENERATED",
     entityType: "recommendation",
     entityId: rec.id as string,
-    metadata: { title: validated.title, weak_concepts: weakConcepts.map((w) => w.name) },
+    metadata: { title: validated.title, weak_concepts: weakConcepts.map((w) => w.name), mode },
   });
 
   return { id: rec.id as string, title: validated.title, action_items: validated.action_items as string[] };
+}
+
+/**
+ * Fire-and-forget refresh used after ANY completed learning task (quiz,
+ * practice, flashcard review, tutor exchange, recommendation completion).
+ * Never throws — failures only log so the originating task is unaffected.
+ * Guarantees the "active recommendations after doing any task" invariant:
+ * when no weak concepts remain, generation falls back to maintenance /
+ * stretch mode instead of returning null, so an ACTIVE row still appears.
+ */
+export async function refreshRecommendationAfterTask(params: {
+  projectId: string;
+  userId: string;
+  spaceId?: string | null;
+  trigger: string;
+  force?: boolean;
+}): Promise<{ id: string; title: string; action_items: string[] } | null> {
+  try {
+    return await generateRecommendationForProject({
+      projectId: params.projectId,
+      userId: params.userId,
+      spaceId: params.spaceId ?? null,
+      force: params.force ?? false,
+    });
+  } catch (e) {
+    console.warn(`Recommendation refresh after ${params.trigger} skipped:`, e instanceof Error ? e.message : String(e));
+    return null;
+  }
 }
 
 export async function listRecommendations(projectId: string): Promise<Array<{ id: string; title: string; action_items: string[]; status: string; created_at: string }>> {
@@ -454,6 +523,15 @@ export async function updateRecommendationStatus(recommendationId: string, statu
       metadata: { title: typed.title, previous_status: "ACTIVE" },
     });
     if (evtErr) console.error("Failed to emit RECOMMENDATION_COMPLETED:", evtErr);
+    // Completing a next-step is itself a task — backfill the next ACTIVE
+    // (forced fresh) without slowing the PATCH response.
+    void refreshRecommendationAfterTask({
+      projectId: typed.project_id,
+      userId,
+      spaceId,
+      trigger: "recommendation/completed",
+      force: true,
+    });
   }
 }
 

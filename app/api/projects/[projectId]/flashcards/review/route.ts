@@ -47,6 +47,12 @@ export async function POST(
       reviewId,
     });
 
+    // Keep an ACTIVE recommendation after flashcard work without slowing the
+    // review response: throttled inside (fresh ACTIVE <15 min is reused).
+    void import("@/services/recommendation.service")
+      .then((m) => m.refreshRecommendationAfterTask({ projectId, userId, trigger: "flashcard/review" }))
+      .catch((e) => console.warn("Flashcard recommendation refresh skipped:", e instanceof Error ? e.message : String(e)));
+
     return NextResponse.json(
       {
         review_id: r.reviewId,
