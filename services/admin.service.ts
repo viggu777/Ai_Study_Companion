@@ -487,6 +487,247 @@ export async function getAdminJobHealth(): Promise<AdminJobHealth> {
 }
 
 /* ------------------------------------------------------------------ */
+/* Engagement + Learning Analytics aggregates (PRD §16 Admin Dashboard). */
+/* Platform-level rollups over learning_events / concept_mastery / answers */
+/* via the service role. All queries are bounded (head counts + capped      */
+/* selects) so the pages stay fast on a prototype dataset.                 */
+/* ------------------------------------------------------------------ */
+
+export interface AdminEngagement {
+  dau: number;
+  wau: number;
+  mau: number;
+  activeProjects7d: number;
+  events7d: number;
+  events30d: number;
+  tutorUsers7d: number;
+  quizUsers7d: number;
+  avgEventsPerWau: number | null;
+  newSpaces7d: number;
+  newProjects7d: number;
+  byEventType30d: Array<{ event_type: string; count: number }>;
+  dailyActive7d: Array<{ date: string; users: number; events: number }>;
+}
+
+/**
+ * Aggregated engagement: DAU/WAU/MAU (distinct user_id in learning_events),
+ * active projects, tutor vs quiz participation, new spaces/projects, and a
+ * 7-day daily-active series. Caller must have passed requireAdmin().
+ */
+export async function getAdminEngagement(): Promise<AdminEngagement> {
+  const db = getServiceDb();
+  const now = Date.now();
+  const d7 = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const d30 = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [e30Res, spaces7Res, projects7Res] = await Promise.all([
+    db
+      .from("learning_events")
+      .select("user_id, project_id, event_type, created_at")
+      .gte("created_at", d30)
+      .order("created_at", { ascending: false })
+      .limit(5000),
+    db.from("spaces").select("id", { count: "exact", head: true }).gte("created_at", d7),
+    db.from("projects").select("id", { count: "exact", head: true }).gte("created_at", d7),
+  ]);
+  if (e30Res.error) throw new Error(e30Res.error.message);
+
+  const rows = (e30Res.data ?? []) as Array<{
+    user_id: string;
+    project_id: string | null;
+    event_type: string;
+    created_at: string;
+  }>;
+
+  const dauSet = new Set<string>();
+  const wauSet = new Set<string>();
+  const mauSet = new Set<string>();
+  const activeProjects = new Set<string>();
+  const tutorUsers = new Set<string>();
+  const quizUsers = new Set<string>();
+  const byType = new Map<string, number>();
+  const byDay = new Map<string, { users: Set<string>; events: number }>();
+  let events7d = 0;
+
+  for (const r of rows) {
+    const t = Date.parse(r.created_at);
+    mauSet.add(r.user_id);
+    byType.set(r.event_type, (byType.get(r.event_type) ?? 0) + 1);
+    if (Number.isNaN(t)) continue;
+    if (t >= now - 7 * 86400000) {
+      wauSet.add(r.user_id);
+      events7d++;
+      if (r.project_id) activeProjects.add(r.project_id);
+      if (r.event_type === "TUTOR_MESSAGE_SENT" || r.event_type === "TUTOR_RESPONSE_GENERATED")
+        tutorUsers.add(r.user_id);
+      if (r.event_type === "QUIZ_STARTED" || r.event_type === "QUIZ_COMPLETED" || r.event_type === "QUESTION_ANSWERED")
+        quizUsers.add(r.user_id);
+      const day = r.created_at.slice(0, 10);
+      let bucket = byDay.get(day);
+      if (!bucket) {
+        bucket = { users: new Set<string>(), events: 0 };
+        byDay.set(day, bucket);
+      }
+      bucket.users.add(r.user_id);
+      bucket.events++;
+    }
+    if (t >= now - 86400000) dauSet.add(r.user_id);
+  }
+
+  return {
+    dau: dauSet.size,
+    wau: wauSet.size,
+    mau: mauSet.size,
+    activeProjects7d: activeProjects.size,
+    events7d,
+    events30d: rows.length,
+    tutorUsers7d: tutorUsers.size,
+    quizUsers7d: quizUsers.size,
+    avgEventsPerWau: wauSet.size > 0 ? Math.round((events7d / wauSet.size) * 100) / 100 : null,
+    newSpaces7d: spaces7Res.count ?? 0,
+    newProjects7d: projects7Res.count ?? 0,
+    byEventType30d: Array.from(byType.entries())
+      .map(([event_type, count]) => ({ event_type, count }))
+      .sort((a, b) => b.count - a.count),
+    dailyActive7d: Array.from(byDay.entries())
+      .map(([date, b]) => ({ date, users: b.users.size, events: b.events }))
+      .sort((a, b) => a.date.localeCompare(b.date)),
+  };
+}
+
+export interface AdminLearningAnalytics {
+  totalConcepts: number;
+  avgMastery: number | null;
+  buckets: { beginner: number; developing: number; proficient: number; mastered: number };
+  totalQuizAttempts: number;
+  totalAnswers: number;
+  accuracy: number | null;
+  avgScore: number | null;
+  avgOpenEnded: number | null;
+  improving: number;
+  stable: number;
+  attention: number;
+  weakestConcepts: Array<{ id: string; name: string; project_id: string; mastery: number }>;
+  strongestConcepts: Array<{ id: string; name: string; project_id: string; mastery: number }>;
+}
+
+/**
+ * Aggregated learning analytics: mastery distribution, quiz accuracy, trend
+ * counts (same ±5 rule as growth.service), weakest/strongest concepts.
+ */
+export async function getAdminLearningAnalytics(): Promise<AdminLearningAnalytics> {
+  const db = getServiceDb();
+
+  const [masteryRes, conceptsRes, quizzesRes, answersRes, histRes] = await Promise.all([
+    db.from("concept_mastery").select("concept_id, project_id, mastery_score").order("updated_at", { ascending: false }).limit(5000),
+    db.from("concepts").select("id, name, project_id").order("created_at", { ascending: false }).limit(2000),
+    db.from("quizzes").select("id", { count: "exact", head: true }),
+    db.from("answers").select("is_correct, score, evaluation").order("created_at", { ascending: false }).limit(2000),
+    db.from("mastery_history").select("concept_id, previous_score, new_score, created_at").order("created_at", { ascending: false }).limit(5000),
+  ]);
+  if (masteryRes.error) throw new Error(masteryRes.error.message);
+  if (answersRes.error) throw new Error(answersRes.error.message);
+
+  const masteryRows = (masteryRes.data ?? []) as Array<{
+    concept_id: string;
+    project_id: string;
+    mastery_score: number | string;
+  }>;
+  const nameById = new Map<string, { name: string; project_id: string }>();
+  for (const c of ((conceptsRes.data ?? []) as Array<{ id: string; name: string; project_id: string }>)) {
+    nameById.set(c.id, { name: c.name, project_id: c.project_id });
+  }
+
+  const scores = masteryRows.map((r) => Number(r.mastery_score));
+  const avgMastery =
+    scores.length > 0 ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100 : null;
+  const buckets = { beginner: 0, developing: 0, proficient: 0, mastered: 0 };
+  for (const s of scores) {
+    if (s < 40) buckets.beginner++;
+    else if (s < 60) buckets.developing++;
+    else if (s < 80) buckets.proficient++;
+    else buckets.mastered++;
+  }
+
+  const answers = (answersRes.data ?? []) as Array<{
+    is_correct: boolean | null;
+    score: number | string | null;
+    evaluation: unknown;
+  }>;
+  const accRows = answers.filter((a) => a.is_correct !== null);
+  const accuracy =
+    accRows.length > 0
+      ? Math.round((accRows.filter((a) => a.is_correct).length / accRows.length) * 10000) / 100
+      : null;
+  const allScores = answers.map((a) => (a.score !== null ? Number(a.score) : null)).filter((v): v is number => v !== null);
+  const avgScore =
+    allScores.length > 0 ? Math.round((allScores.reduce((a, b) => a + b, 0) / allScores.length) * 100) / 100 : null;
+  const openScores = answers
+    .filter((a) => a.evaluation !== null)
+    .map((a) => (a.score !== null ? Number(a.score) : null))
+    .filter((v): v is number => v !== null);
+  const avgOpenEnded =
+    openScores.length > 0 ? Math.round((openScores.reduce((a, b) => a + b, 0) / openScores.length) * 100) / 100 : null;
+
+  // Trend counts: group history newest-first per concept, compare 2 latest.
+  const byConcept = new Map<string, Array<{ prev: number; next: number }>>();
+  for (const h of ((histRes.data ?? []) as Array<{
+    concept_id: string;
+    previous_score: number | string;
+    new_score: number | string;
+  }>)) {
+    const arr = byConcept.get(h.concept_id) ?? [];
+    arr.push({ prev: Number(h.previous_score), next: Number(h.new_score) });
+    byConcept.set(h.concept_id, arr);
+  }
+  let improving = 0;
+  let stable = 0;
+  let attention = 0;
+  const conceptIds = Array.from(new Set(masteryRows.map((r) => r.concept_id)));
+  for (const cid of conceptIds) {
+    const h = byConcept.get(cid) ?? [];
+    if (h.length === 0) {
+      stable++;
+    } else if (h.length === 1) {
+      const d = h[0].next - h[0].prev;
+      if (d > 5) improving++;
+      else if (d < -5) attention++;
+      else stable++;
+    } else {
+      const d = h[0].next - h[1].next;
+      if (d > 5) improving++;
+      else if (d < -5) attention++;
+      else stable++;
+    }
+  }
+
+  const ranked = masteryRows
+    .map((r) => ({
+      id: r.concept_id,
+      name: nameById.get(r.concept_id)?.name ?? r.concept_id.slice(0, 8),
+      project_id: r.project_id,
+      mastery: Number(r.mastery_score),
+    }))
+    .sort((a, b) => a.mastery - b.mastery);
+
+  return {
+    totalConcepts: (conceptsRes.data ?? []).length,
+    avgMastery,
+    buckets,
+    totalQuizAttempts: quizzesRes.count ?? 0,
+    totalAnswers: answers.length,
+    accuracy,
+    avgScore,
+    avgOpenEnded,
+    improving,
+    stable,
+    attention,
+    weakestConcepts: ranked.slice(0, 10),
+    strongestConcepts: [...ranked].reverse().slice(0, 10),
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* System Health (Task 2) — lightweight, admin-only, server-side only. */
 /* Every check is real (live query / config presence / short-timeout    */
 /* probe) and never returns secret values — only presence + labels.     */
