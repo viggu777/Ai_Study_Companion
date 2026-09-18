@@ -27,7 +27,7 @@ Requires `DATABASE_URL` in `.env.local` (see `.env.example`).
 
 1. Open your Supabase project dashboard
 2. Go to **SQL Editor**
-3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` then `003_storage.sql` then `004_embeddings_384.sql` then `005_conversation_summary.sql` then `006_embeddings_gemini_768.sql` then `007_practice.sql` (in order)
+3. Copy the contents of `001_initial_schema.sql` then `002_retrieve.sql` then `003_storage.sql` then `004_embeddings_384.sql` then `005_conversation_summary.sql` then `006_embeddings_gemini_768.sql` then `007_practice.sql` then `008_practice_mcq.sql` then `009_practice_sections.sql` (in order)
 4. Paste into a new query and run it
 
 ### Option 2: Supabase CLI

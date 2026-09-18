@@ -16,7 +16,7 @@ export async function GET(
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
-    if (msg.includes("007_practice") || msg.includes("008_practice_mcq")) return NextResponse.json({ error: msg }, { status: 503 });
+    if (msg.includes("007_practice") || msg.includes("008_practice_mcq") || msg.includes("009_practice_sections")) return NextResponse.json({ error: msg }, { status: 503 });
     return NextResponse.json({ error: msg || "Failed to list practice assignments" }, { status: 500 });
   }
 }
@@ -30,18 +30,19 @@ export async function POST(
     const { projectId } = await params;
     const body = await request.json().catch(() => ({}));
     const count = typeof body.count === "number" ? body.count : undefined;
+    const level = typeof body.level === "string" ? body.level : undefined;
     // Practice generation costs an LLM call — 5/min per user (double-clicks are
     // also absorbed by the idempotency guard in generatePracticeAssignment).
     const rl = checkRateLimit(`practice-generate:${userId}`, 5, 60_000);
     if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
-    const result = await generatePracticeAssignment(projectId, { count });
+    const result = await generatePracticeAssignment(projectId, { count, level });
     return NextResponse.json(result, { status: 201 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
     if (msg.includes("No concepts")) return NextResponse.json({ error: msg }, { status: 400 });
-    if (msg.includes("007_practice") || msg.includes("008_practice_mcq")) return NextResponse.json({ error: msg }, { status: 503 });
+    if (msg.includes("007_practice") || msg.includes("008_practice_mcq") || msg.includes("009_practice_sections")) return NextResponse.json({ error: msg }, { status: 503 });
     console.error("Practice generation failed:", e);
     return NextResponse.json({ error: msg || "Practice generation failed" }, { status: 500 });
   }

@@ -8,7 +8,14 @@ import {
   PRACTICE_DEFAULT_COUNT,
   PRACTICE_MAX_COUNT,
   PRACTICE_MIN_COUNT,
+  PRACTICE_LEVEL_LABEL,
+  PRACTICE_SECTION_LABEL,
   clampPracticeCount,
+  clampPracticeLevel,
+  practiceSectionFor,
+  type PracticeLevel,
+  type PracticeQuestionType,
+  type PracticeSection,
 } from "@/ai/practice";
 
 interface AssignmentListItem {
@@ -28,13 +35,14 @@ interface PracticeQuestion {
   subconcept_label: string | null;
   intent: string;
   difficulty: string;
-  question_type: "MCQ" | "OPEN_ENDED";
+  question_type: PracticeQuestionType;
   question: string;
   options: string[] | null;
   selection_reason: string | null;
   reference_answer?: string | null;
   // Disclosed only for answered questions (API strips pre-submission).
   correct_answer?: string | null;
+  acceptable_answers?: string[] | null;
   explanation?: string | null;
   answered?: boolean;
 }
@@ -83,7 +91,7 @@ interface PracticeSummary {
 }
 
 interface ActiveAssignment {
-  assignment: { id: string; project_id: string; status: string; created_at: string; focus_summary?: string | null };
+  assignment: { id: string; project_id: string; status: string; created_at: string; focus_summary?: string | null; selection_context?: { level?: string } | null };
   questions: PracticeQuestion[];
 }
 
@@ -99,8 +107,23 @@ const INTENT_LABEL: Record<string, string> = {
 
 const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"];
 
-function isPracticeMcq(q: PracticeQuestion): boolean {
-  return (q.question_type ?? "OPEN_ENDED") === "MCQ";
+function sectionOf(q: PracticeQuestion): PracticeSection {
+  return practiceSectionFor((q.question_type ?? "OPEN_ENDED") as PracticeQuestionType);
+}
+
+function isObjective(q: PracticeQuestion): boolean {
+  return q.question_type === "MCQ" || q.question_type === "TRUE_FALSE";
+}
+
+function isOneWord(q: PracticeQuestion): boolean {
+  return q.question_type === "ONE_WORD";
+}
+
+function typeBadgeLabel(q: PracticeQuestion): string {
+  if (q.question_type === "MCQ") return "Multiple choice";
+  if (q.question_type === "TRUE_FALSE") return "True / False";
+  if (q.question_type === "ONE_WORD") return "One word";
+  return "Open ended";
 }
 
 function StepDots({ total, current, answered }: { total: number; current: number; answered: boolean[] }) {
@@ -126,9 +149,12 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [practiceCount, setPracticeCount] = useState<number>(PRACTICE_DEFAULT_COUNT);
+  const [practiceLevel, setPracticeLevel] = useState<PracticeLevel>("MIXED");
   const [active, setActive] = useState<ActiveAssignment | null>(null);
+  const [activeLevel, setActiveLevel] = useState<PracticeLevel>("MIXED");
   const [currentIdx, setCurrentIdx] = useState(0);
   const [answerText, setAnswerText] = useState("");
+  const [shortText, setShortText] = useState("");
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [confidence, setConfidence] = useState<number | null>(null);
   const [results, setResults] = useState<Record<string, PracticeResponseRecord>>({});
@@ -166,17 +192,19 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/practice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: clampPracticeCount(practiceCount) }),
+        body: JSON.stringify({ count: clampPracticeCount(practiceCount), level: practiceLevel }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate practice assignment");
       const a: ActiveAssignment = { assignment: data.assignment, questions: data.questions };
       setActive(a);
+      setActiveLevel(clampPracticeLevel(data.level ?? practiceLevel));
       setCurrentIdx(0);
       setResults({});
       setDeltas({});
       setCalibrations({});
       setAnswerText("");
+      setShortText("");
       setSelectedOption(null);
       setConfidence(null);
       setShowFeedback(false);
@@ -237,6 +265,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
         setCurrentIdx(first);
       }
       setAnswerText("");
+      setShortText("");
       setSelectedOption(null);
       setConfidence(null);
       setShowFeedback(false);
@@ -252,13 +281,18 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
 
   const submitCurrent = async () => {
     if (!currentQuestion || !active) return;
-    const mcq = isPracticeMcq(currentQuestion);
-    if (mcq && !selectedOption) {
+    const objective = isObjective(currentQuestion);
+    const oneWord = isOneWord(currentQuestion);
+    if (objective && !selectedOption) {
       setError("Pick an option first — then submit to check it.");
       return;
     }
-    if (!mcq && !answerText.trim()) {
-      setError("Write your explanation first — Practice is about showing understanding, not picking an option.");
+    if (oneWord && !shortText.trim()) {
+      setError("Type your answer first — a single word or short phrase is enough.");
+      return;
+    }
+    if (!objective && !oneWord && !answerText.trim()) {
+      setError("Write your explanation first — this section is about showing understanding, not picking an option.");
       return;
     }
     setError(null);
@@ -267,7 +301,11 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/practice/${active.assignment.id}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionId: currentQuestion.id, response: mcq ? selectedOption : answerText.trim(), confidence }),
+        body: JSON.stringify({
+          questionId: currentQuestion.id,
+          response: objective ? selectedOption : oneWord ? shortText.trim() : answerText.trim(),
+          confidence,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to submit practice response");
@@ -287,6 +325,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
                         ...q,
                         answered: true,
                         correct_answer: (data.correct_answer as string | null) ?? q.correct_answer ?? null,
+                        acceptable_answers: (data.acceptable_answers as string[] | null) ?? q.acceptable_answers ?? null,
                         explanation: (data.explanation as string | null) ?? q.explanation ?? null,
                         reference_answer: (data.reference_answer as string | null) ?? q.reference_answer ?? null,
                       }
@@ -343,7 +382,8 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const nextQ = active.questions[currentIdx + 1];
       const nextRes = nextQ ? results[nextQ.id] : null;
       setAnswerText(nextRes?.response ?? "");
-      setSelectedOption(nextQ && isPracticeMcq(nextQ) ? (nextRes?.response ?? null) : null);
+      setShortText(nextQ && isOneWord(nextQ) ? (nextRes?.response ?? "") : "");
+      setSelectedOption(nextQ && isObjective(nextQ) ? (nextRes?.response ?? null) : null);
       setConfidence(nextRes?.confidence ?? null);
       setShowFeedback(!!nextRes);
     }
@@ -355,7 +395,8 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       const prevQ = active.questions[currentIdx - 1];
       const prevRes = prevQ ? results[prevQ.id] : null;
       setAnswerText(prevRes?.response ?? "");
-      setSelectedOption(prevQ && isPracticeMcq(prevQ) ? (prevRes?.response ?? null) : null);
+      setShortText(prevQ && isOneWord(prevQ) ? (prevRes?.response ?? "") : "");
+      setSelectedOption(prevQ && isObjective(prevQ) ? (prevRes?.response ?? null) : null);
       setConfidence(prevRes?.confidence ?? null);
       setShowFeedback(!!prevRes);
       setError(null);
@@ -364,11 +405,13 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
 
   const resetToList = () => {
     setActive(null);
+    setActiveLevel("MIXED");
     setCurrentIdx(0);
     setResults({});
     setDeltas({});
     setCalibrations({});
     setAnswerText("");
+    setShortText("");
     setSelectedOption(null);
     setConfidence(null);
     setError(null);
@@ -395,7 +438,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             {avg}
             <span className="text-2xl text-stone-400">%</span>
           </p>
-          <p className="mt-2 text-sm text-stone-500">{answered} of {total} answered · mixed multiple-choice + open-ended</p>
+          <p className="mt-2 text-sm text-stone-500">{answered} of {total} answered · Level: {PRACTICE_LEVEL_LABEL[activeLevel]}</p>
           <div className="mt-3 flex justify-center">
             <Badge tone={completed ? "success" : "warning"}>{completed ? "completed" : "in progress"}</Badge>
           </div>
@@ -518,52 +561,67 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <p className="text-center text-sm text-stone-400">Summary is being prepared…</p>
         )}
 
-        <div className="space-y-3">
-          {active.questions.map((q, idx) => {
-            const r = results[q.id];
-            const qMcq = isPracticeMcq(q);
-            const qCorrect = qMcq && r?.score !== null && r?.score !== undefined ? r.score === 100 : null;
-            return (
-              <div key={q.id} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-card">
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-stone-100 text-xs font-semibold text-stone-700">{idx + 1}</span>
-                  <Badge tone="accent">{INTENT_LABEL[q.intent] ?? q.intent}</Badge>
-                  <Badge tone="neutral">{qMcq ? "Multiple choice" : "Open ended"}</Badge>
-                  <Badge tone="neutral">{q.difficulty}</Badge>
-                  {q.concept_name && <span className="text-xs text-stone-400">{q.concept_name}</span>}
-                  {r?.score !== null && r?.score !== undefined && <span className="tnum text-xs text-stone-500">{r.score}%</span>}
-                  {qCorrect !== null && <Badge tone={qCorrect ? "success" : "danger"}>{qCorrect ? "Correct" : "Incorrect"}</Badge>}
-                </div>
-                <p className="text-[15px] font-medium leading-relaxed text-stone-900">{q.question}</p>
-                <p className="mt-3 text-sm text-stone-700">
-                  <span className="font-medium text-stone-900">{qMcq ? "Your answer:" : "Your explanation:"}</span> {r ? r.response : <span className="text-stone-400">no response</span>}
-                </p>
-                {qMcq && r && qCorrect === false && q.correct_answer && (
-                  <p className="mt-1.5 text-sm text-stone-700">
-                    <span className="font-medium text-green-700">Correct answer:</span> {q.correct_answer}
-                  </p>
-                )}
-                {r?.evaluation && (
-                  <div className="mt-3 space-y-1.5 rounded-xl bg-stone-50 p-4 text-sm">
-                    <p className="text-stone-800"><span className="font-medium">Feedback:</span> {r.evaluation.feedback}</p>
-                    <p className="text-xs text-stone-500"><span className="font-medium">Next:</span> {r.evaluation.suggested_improvement}</p>
-                    {r.evaluation.misconceptions.length > 0 && (
-                      <p className="text-xs text-red-700"><span className="font-medium">Misconceptions:</span> {r.evaluation.misconceptions.join("; ")}</p>
+        {(["A", "B", "C"] as PracticeSection[])
+          .filter((s) => active.questions.some((q) => sectionOf(q) === s))
+          .map((s) => (
+            <div key={s} className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
+                Section {s} · {PRACTICE_SECTION_LABEL[s]}
+              </h3>
+              {active.questions.map((q) => {
+                if (sectionOf(q) !== s) return null;
+                const num = active.questions.indexOf(q) + 1;
+                const r = results[q.id];
+                const qDet = isObjective(q) || isOneWord(q);
+                const qCorrect = qDet && r?.score !== null && r?.score !== undefined ? r.score === 100 : null;
+                return (
+                  <div key={q.id} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-card">
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-stone-100 text-xs font-semibold text-stone-700">{num}</span>
+                      <Badge tone="accent">{INTENT_LABEL[q.intent] ?? q.intent}</Badge>
+                      <Badge tone="neutral">{typeBadgeLabel(q)}</Badge>
+                      <Badge tone="neutral">{q.difficulty}</Badge>
+                      {q.concept_name && <span className="text-xs text-stone-400">{q.concept_name}</span>}
+                      {r?.score !== null && r?.score !== undefined && <span className="tnum text-xs text-stone-500">{r.score}%</span>}
+                      {qCorrect !== null && <Badge tone={qCorrect ? "success" : "danger"}>{qCorrect ? "Correct" : "Incorrect"}</Badge>}
+                    </div>
+                    <p className="text-[15px] font-medium leading-relaxed text-stone-900">{q.question}</p>
+                    <p className="mt-3 text-sm text-stone-700">
+                      <span className="font-medium text-stone-900">{qDet ? "Your answer:" : "Your explanation:"}</span> {r ? r.response : <span className="text-stone-400">no response</span>}
+                    </p>
+                    {qDet && r && qCorrect === false && q.correct_answer && (
+                      <p className="mt-1.5 text-sm text-stone-700">
+                        <span className="font-medium text-green-700">Correct answer:</span> {q.correct_answer}
+                        {isOneWord(q) && q.acceptable_answers && q.acceptable_answers.length > 0 && (
+                          <span className="text-stone-500"> (also accepted: {q.acceptable_answers.join("; ")})</span>
+                        )}
+                      </p>
+                    )}
+                    {r?.evaluation && (
+                      <div className="mt-3 space-y-1.5 rounded-xl bg-stone-50 p-4 text-sm">
+                        <p className="text-stone-800"><span className="font-medium">Feedback:</span> {r.evaluation.feedback}</p>
+                        <p className="text-xs text-stone-500"><span className="font-medium">Next:</span> {r.evaluation.suggested_improvement}</p>
+                        {r.evaluation.misconceptions.length > 0 && (
+                          <p className="text-xs text-red-700"><span className="font-medium">Misconceptions:</span> {r.evaluation.misconceptions.join("; ")}</p>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          ))}
       </div>
     );
   }
 
   if (active && currentQuestion) {
     const alreadyAnswered = !!currentResult;
-    const mcq = isPracticeMcq(currentQuestion);
-    const mcqCorrect = mcq && currentResult?.score !== null && currentResult?.score !== undefined ? currentResult.score === 100 : null;
+    const objective = isObjective(currentQuestion);
+    const oneWord = isOneWord(currentQuestion);
+    const determined = objective || oneWord;
+    const detCorrect = determined && currentResult?.score !== null && currentResult?.score !== undefined ? currentResult.score === 100 : null;
+    const section = sectionOf(currentQuestion);
     const answeredFlags = active.questions.map((q) => !!results[q.id]);
     const qDeltas = deltas[currentQuestion.id] ?? [];
     const qCal = calibrations[currentQuestion.id];
@@ -573,17 +631,18 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <button onClick={resetToList} className="text-sm text-stone-500 transition-colors hover:text-stone-900">
             ← All practice
           </button>
-          <span className="tnum text-sm text-stone-500">{currentIdx + 1} / {total}</span>
+          <span className="tnum text-sm text-stone-500">Section {section} · {currentIdx + 1} / {total} · {PRACTICE_LEVEL_LABEL[activeLevel]}</span>
         </div>
         <StepDots total={total} current={currentIdx} answered={answeredFlags} />
 
         <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-card sm:p-8">
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            <Badge tone="accent">{INTENT_LABEL[currentQuestion.intent] ?? currentQuestion.intent}</Badge>
-            <Badge tone="neutral">{mcq ? "Multiple choice" : "Open ended"}</Badge>
+            <Badge tone="accent">Section {section} · {PRACTICE_SECTION_LABEL[section]}</Badge>
+            <Badge tone="neutral">{typeBadgeLabel(currentQuestion)}</Badge>
+            <Badge tone="neutral">{INTENT_LABEL[currentQuestion.intent] ?? currentQuestion.intent}</Badge>
             <Badge tone="neutral">{currentQuestion.difficulty}</Badge>
-            {mcq && alreadyAnswered && mcqCorrect !== null && (
-              <Badge tone={mcqCorrect ? "success" : "danger"}>{mcqCorrect ? "Correct" : "Incorrect"}</Badge>
+            {determined && alreadyAnswered && detCorrect !== null && (
+              <Badge tone={detCorrect ? "success" : "danger"}>{detCorrect ? "Correct" : "Incorrect"}</Badge>
             )}
             {currentQuestion.concept_name && (
               <span className="text-xs text-stone-400" title="Selected from mastery + mistakes + misconceptions + growth">
@@ -600,15 +659,15 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             </p>
           )}
 
-          {mcq ? (
+          {objective ? (
             <div>
               <div className="space-y-2.5" role="radiogroup" aria-label="Answer options">
                 {(currentQuestion.options ?? []).map((opt, idx) => {
                   const isSelected = selectedOption === opt;
                   const isResponse = alreadyAnswered && currentResult?.response === opt;
-                  const showVerdict = alreadyAnswered && mcqCorrect !== null;
+                  const showVerdict = alreadyAnswered && detCorrect !== null;
                   const verdictGood = showVerdict && opt === currentQuestion.correct_answer;
-                  const verdictBad = showVerdict && isResponse && !mcqCorrect;
+                  const verdictBad = showVerdict && isResponse && !detCorrect;
                   return (
                     <label
                       key={idx}
@@ -650,7 +709,21 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
                   );
                 })}
               </div>
-              <p className="mt-2 text-xs text-stone-400">Multiple-choice — checked instantly, no waiting on AI grading.</p>
+              <p className="mt-2 text-xs text-stone-400">Section A · Objective — checked instantly, no waiting on AI grading.</p>
+            </div>
+          ) : oneWord ? (
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-stone-700">Your answer</label>
+              <input
+                type="text"
+                value={alreadyAnswered ? (currentResult?.response ?? shortText) : shortText}
+                onChange={(e) => !alreadyAnswered && setShortText(e.target.value)}
+                placeholder="One word or short phrase…"
+                maxLength={120}
+                disabled={alreadyAnswered}
+                className="w-full rounded-2xl border border-stone-300 bg-white px-4 py-3 text-[15px] focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600 disabled:bg-stone-50"
+              />
+              <p className="mt-2 text-xs text-stone-400">Section B · Short answer — spelling variants and synonyms count, case doesn&apos;t matter.</p>
             </div>
           ) : (
             <div>
@@ -663,7 +736,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
                 disabled={alreadyAnswered}
                 className="w-full rounded-2xl border border-stone-300 bg-white px-4 py-3 text-[15px] focus:border-sky-600 focus:outline-none focus:ring-1 focus:ring-sky-600 disabled:bg-stone-50"
               />
-              <p className="mt-2 text-xs text-stone-400">Open-ended — AI evaluates understanding and collects evidence for mastery, growth, and recommendations.</p>
+              <p className="mt-2 text-xs text-stone-400">Section C · Descriptive — AI evaluates understanding and collects evidence for mastery, growth, and recommendations.</p>
             </div>
           )}
 
@@ -692,13 +765,16 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
 
           {showFeedback && currentResult?.evaluation && (
-            <div className={`mt-5 space-y-3 rounded-2xl border p-5 ${mcq ? (mcqCorrect ? "border-green-600/30 bg-green-50" : "border-red-200 bg-red-50/60") : "border-stone-200 bg-stone-50"}`}>
-              {mcq ? (
+            <div className={`mt-5 space-y-3 rounded-2xl border p-5 ${determined ? (detCorrect ? "border-green-600/30 bg-green-50" : "border-red-200 bg-red-50/60") : "border-stone-200 bg-stone-50"}`}>
+              {determined ? (
                 <div className="space-y-1.5 text-sm">
-                  <p className={`text-[15px] font-semibold ${mcqCorrect ? "text-green-700" : "text-stone-900"}`}>
-                    {mcqCorrect ? "Correct — nice work" : "Not quite"} <span className="tnum text-xs font-normal text-stone-500">({currentResult.score}/100)</span>
+                  <p className={`text-[15px] font-semibold ${detCorrect ? "text-green-700" : "text-stone-900"}`}>
+                    {detCorrect ? "Correct — nice work" : "Not quite"} <span className="tnum text-xs font-normal text-stone-500">({currentResult.score}/100)</span>
                   </p>
                   <p className="text-stone-800"><span className="font-medium">Feedback:</span> {currentResult.evaluation.feedback}</p>
+                  {oneWord && currentQuestion.acceptable_answers && currentQuestion.acceptable_answers.length > 0 && (
+                    <p className="text-xs text-stone-500"><span className="font-medium">Also accepted:</span> {currentQuestion.acceptable_answers.join("; ")}</p>
+                  )}
                   {currentQuestion.explanation && (
                     <p className="text-xs text-stone-500"><span className="font-medium">Why:</span> {currentQuestion.explanation}</p>
                   )}
@@ -769,9 +845,9 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               ← Previous
             </button>
             {!alreadyAnswered && !showFeedback ? (
-              <Button onClick={submitCurrent} disabled={submitting || (mcq ? !selectedOption : !answerText.trim())} className="min-w-32">
+              <Button onClick={submitCurrent} disabled={submitting || (objective ? !selectedOption : oneWord ? !shortText.trim() : !answerText.trim())} className="min-w-32">
                 {submitting && <Spinner className="text-white" />}
-                {submitting ? (mcq ? "Checking…" : "Evaluating…") : mcq ? "Submit answer" : "Submit explanation"}
+                {submitting ? (determined ? "Checking…" : "Evaluating…") : determined ? "Submit answer" : "Submit explanation"}
                 {!submitting && <ArrowRightIcon className="h-4 w-4" />}
               </Button>
             ) : (
@@ -781,7 +857,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
               </Button>
             )}
           </div>
-          {submitting && <p className="mt-2 text-center text-xs text-stone-400">{mcq ? "Checking your answer…" : "Evaluating understanding + extracting evidence…"}</p>}
+          {submitting && <p className="mt-2 text-center text-xs text-stone-400">{determined ? "Checking your answer…" : "Evaluating understanding + extracting evidence…"}</p>}
         </div>
 
         <p className="text-center text-xs text-stone-400">
@@ -799,13 +875,20 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
             <PracticeIcon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-semibold tracking-tight text-stone-900">Deep practice</h2>
+            <h2 className="text-lg font-semibold tracking-tight text-stone-900">Practice assignment</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
-              Mixed multiple-choice + open-ended questions per assignment, chosen from weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites.
+              An exam-style paper built from your weak concepts, recent mistakes, misconceptions, growth trend, and prerequisites.
             </p>
-            <div className="mt-3 rounded-xl bg-stone-50 px-3.5 py-2.5 text-xs leading-relaxed text-stone-500 ring-1 ring-inset ring-stone-200">
-              <span className="font-semibold text-stone-700">Quiz = fast assessment.</span> Get the answer right.{" "}
-              <span className="font-semibold text-stone-700">Practice = deep learning.</span> Show what you actually understand — explain, reason, apply, compare, solve, teach back.
+            <div className="mt-3 grid gap-2 text-xs leading-relaxed text-stone-500 sm:grid-cols-3">
+              <div className="rounded-xl bg-stone-50 px-3.5 py-2.5 ring-1 ring-inset ring-stone-200">
+                <span className="font-semibold text-stone-700">Section A · Objective.</span> Multiple-choice + True/False — quick checks, instant marking.
+              </div>
+              <div className="rounded-xl bg-stone-50 px-3.5 py-2.5 ring-1 ring-inset ring-stone-200">
+                <span className="font-semibold text-stone-700">Section B · Short answer.</span> One word or short phrase — synonyms count.
+              </div>
+              <div className="rounded-xl bg-stone-50 px-3.5 py-2.5 ring-1 ring-inset ring-stone-200">
+                <span className="font-semibold text-stone-700">Section C · Descriptive.</span> Explain, reason, teach back — AI evaluates evidence.
+              </div>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Number of questions">
@@ -831,16 +914,33 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
                   +
                 </button>
               </div>
+              <div className="flex items-center gap-1 rounded-lg border border-stone-300 bg-white px-1.5 py-1" aria-label="Paper level">
+                {(["MIXED", "EASY", "MEDIUM", "HARD"] as PracticeLevel[]).map((lv) => (
+                  <button
+                    key={lv}
+                    type="button"
+                    onClick={() => setPracticeLevel(lv)}
+                    disabled={generating}
+                    aria-pressed={practiceLevel === lv}
+                    title={lv === "MIXED" ? "Difficulty adapts per concept" : `All questions ${lv.toLowerCase()}`}
+                    className={`rounded-md px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      practiceLevel === lv ? "bg-sky-600 text-white" : "text-stone-500 hover:bg-stone-100"
+                    }`}
+                  >
+                    {PRACTICE_LEVEL_LABEL[lv]}
+                  </button>
+                ))}
+              </div>
               <Button onClick={startAssignment} disabled={generating}>
                 {generating && <Spinner className="text-white" />}
-                {generating ? "Building your assignment…" : "Start practice"}
+                {generating ? "Building your assignment…" : "Start assignment"}
               </Button>
               <LinkButton href={`/projects/${projectId}/quiz`} variant="secondary">
                 Take a quiz instead
               </LinkButton>
             </div>
             {error && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>}
-            {error?.includes("007_practice") || error?.includes("008_practice_mcq") ? (
+            {error?.includes("007_practice") || error?.includes("008_practice_mcq") || error?.includes("009_practice_sections") ? (
               <p className="mt-2 rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
                 Setup needed: run <span className="font-mono">npm run migrate</span> (or apply the SQL in <span className="font-mono">db/schema/</span> via the Supabase SQL Editor), then try again.
               </p>
@@ -867,7 +967,7 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
           <div className="p-8 text-center">
             <p className="text-sm font-medium text-stone-900">Couldn&apos;t load practice</p>
             <p className="mx-auto mt-1 max-w-md text-sm text-stone-500">{listError}</p>
-            {listError.includes("007_practice") || listError.includes("008_practice_mcq") ? (
+            {listError.includes("007_practice") || listError.includes("008_practice_mcq") || listError.includes("009_practice_sections") ? (
               <p className="mx-auto mt-2 max-w-md rounded-xl bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800 ring-1 ring-inset ring-amber-600/25">
                 Setup needed: run <span className="font-mono">npm run migrate</span> (or apply the SQL in <span className="font-mono">db/schema/</span> via the Supabase SQL Editor), then press Refresh.
               </p>

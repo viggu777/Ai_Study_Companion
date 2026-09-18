@@ -131,9 +131,14 @@ export async function detectBaseline(client, files) {
   const versions = files.map(migrationVersion);
   if (!(await tableExists(client, "spaces"))) return null; // fresh DB
   if (await tableExists(client, "practice_assignments")) {
-    // Practice exists — check whether the 008 MCQ columns landed yet.
-    if (await columnExists(client, "practice_questions", "question_type")) return versions; // at/after 008
-    return versions.filter((v) => v !== "008_practice_mcq.sql"); // at 007, 008 pending
+    // Practice exists — check how far its columns got.
+    if (!(await columnExists(client, "practice_questions", "question_type"))) {
+      return versions.filter((v) => v !== "008_practice_mcq.sql" && v !== "009_practice_sections.sql"); // at 007
+    }
+    if (!(await columnExists(client, "practice_questions", "acceptable_answers"))) {
+      return versions.filter((v) => v !== "009_practice_sections.sql"); // at 008, 009 pending
+    }
+    return versions; // at/after 009
   }
   const dim = await chunksVectorDim(client);
   const hasSummary = await columnExists(client, "conversations", "summary");

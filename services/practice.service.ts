@@ -10,16 +10,23 @@ import {
   PRACTICE_MAX_COUNT,
   PracticeEvaluationSchema,
   PracticeGenerationSchema,
+  assignPracticeSlots,
   buildPracticeEvaluationUserPrompt,
   buildPracticeGenerationUserPrompt,
   calibrateConfidence,
   clampPracticeCount,
+  clampPracticeLevel,
+  defaultPracticeComposition,
+  isShortAnswerCorrect,
+  practiceSectionFor,
   validatePracticeEvaluationOutput,
   validatePracticeGenerationOutput,
   type PracticeDifficulty,
   type PracticeEvaluation,
   type PracticeIntent,
+  type PracticeLevel,
   type PracticeQuestionType,
+  type PracticeSection,
 } from "@/ai/practice";
 import { computeNewMastery } from "@/services/mastery.service";
 
@@ -62,6 +69,42 @@ export function isMissingPracticeMcqColumnError(e: unknown): boolean {
 /** Throw the actionable 008 setup error when a practice read/write hits a missing MCQ column. */
 export function throwIfPracticeMcqColumnsMissing(err: unknown): void {
   if (err && isMissingPracticeMcqColumnError(err)) throw new Error(PRACTICE_MCQ_SETUP_MESSAGE);
+}
+
+/** Returned when db/schema/009_practice_sections.sql was never applied — actionable, not a bare 500. */
+export const PRACTICE_SECTIONS_SETUP_MESSAGE =
+  "Practice section columns are missing — run `npm run migrate` (or apply db/schema/009_practice_sections.sql in the Supabase SQL Editor), then retry.";
+
+/**
+ * Detect a missing-009 state: the acceptable_answers column is absent, or an
+ * insert violates the question_type CHECK because TRUE_FALSE/ONE_WORD are
+ * still rejected. Pure.
+ */
+export function isMissingPracticeSectionsSetupError(e: unknown): boolean {
+  const obj = (typeof e === "object" && e !== null ? e : {}) as {
+    message?: unknown;
+    code?: unknown;
+    details?: unknown;
+    hint?: unknown;
+  };
+  const code = typeof obj.code === "string" ? obj.code : "";
+  const text = [obj.message, obj.details, obj.hint, typeof e === "string" ? e : ""]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return false;
+  if (text.includes("acceptable_answers")) {
+    if (code === "PGRST204") return true;
+    if (text.includes("could not find") && text.includes("column")) return true;
+    if (text.includes("does not exist") && text.includes("column")) return true;
+  }
+  if (text.includes("question_type") && text.includes("check constraint")) return true;
+  return false;
+}
+
+/** Throw the actionable 009 setup error. Check this BEFORE the 008 helper (widened CHECK mentions question_type). */
+export function throwIfPracticeSectionsSetupMissing(err: unknown): void {
+  if (err && isMissingPracticeSectionsSetupError(err)) throw new Error(PRACTICE_SECTIONS_SETUP_MESSAGE);
 }
 
 /** Returned when db/schema/007_practice.sql was never applied — actionable, not a bare 500. */
@@ -205,52 +248,55 @@ export function pickPracticeDifficulty(mastery: number, intent: PracticeIntent):
 }
 
 /**
- * Adaptive question-type choice (MCQ quick check vs open-ended depth).
- * - Active misconception -> OPEN_ENDED (free text surfaces the faulty reasoning).
- * - Explanation-heavy intents (EXPLAIN / WHY / TEACH_BACK) -> OPEN_ENDED.
- * - APPLY / COMPARE / SCENARIO / PROBLEM_SOLVING on shaky ground
- *   (recent mistake or mastery < 60) -> MCQ quick check.
- * - Same intents on solid ground -> OPEN_ENDED stretch.
- * Pure — unit-tested.
+ * Order questions exam-paper style: Section A (Objective) first, then
+ * Section B (Short answer), then Section C (Descriptive). Stable — preserves
+ * the existing relative order inside each section. Unknown/missing types sort
+ * as descriptive (never leak answers by reordering). Pure — unit-tested.
  */
-export function pickPracticeQuestionType(s: {
-  mastery: number;
-  isRecentMistake: boolean;
-  misconceptionCount: number;
-  intent: PracticeIntent;
-}): PracticeQuestionType {
-  if (s.misconceptionCount > 0) return "OPEN_ENDED";
-  if (s.intent === "EXPLAIN" || s.intent === "WHY" || s.intent === "TEACH_BACK") return "OPEN_ENDED";
-  if (s.isRecentMistake || s.mastery < 60) return "MCQ";
-  return "OPEN_ENDED";
+const PRACTICE_SECTION_ORDER: Record<PracticeSection, number> = { A: 0, B: 1, C: 2 };
+
+function sectionRankOf(q: unknown): number {
+  const t =
+    typeof q === "object" && q !== null && typeof (q as { question_type?: unknown }).question_type === "string"
+      ? ((q as { question_type: string }).question_type as PracticeQuestionType)
+      : ("OPEN_ENDED" as PracticeQuestionType);
+  return PRACTICE_SECTION_ORDER[practiceSectionFor(t)] ?? 2;
+}
+
+export function sortPracticeQuestionsBySection<T>(questions: T[]): T[] {
+  return [...questions].sort((a, b) => sectionRankOf(a) - sectionRankOf(b));
 }
 
 /**
- * Guarantee a mixed assignment: when count >= 2 and every candidate landed on
- * the same type, flip one question so the assignment always contains both an
- * MCQ and an open-ended question. Flips the weakest MCQ-friendly candidate to
- * MCQ (quick win first), or the strongest candidate to OPEN_ENDED (stretch
- * last) when everything came out MCQ. Pure — unit-tested.
+ * Synthesize a PracticeEvaluation for deterministically graded answers
+ * (MCQ / TRUE_FALSE exact match, ONE_WORD normalized match) — no LLM call,
+ * so these can never be "temporarily unavailable". Pure — unit-tested.
  */
-export function ensurePracticeTypeMix<
-  T extends { targetType: PracticeQuestionType; mastery: number; targetIntent: PracticeIntent },
->(candidates: T[]): T[] {
-  if (candidates.length < 2) return candidates;
-  const types = new Set(candidates.map((c) => c.targetType));
-  if (types.size > 1) return candidates;
-  const out = candidates.map((c) => ({ ...c }));
-  if (out[0].targetType === "OPEN_ENDED") {
-    const mcqFriendly: PracticeIntent[] = ["APPLY", "COMPARE", "SCENARIO", "PROBLEM_SOLVING"];
-    const idx = out.findIndex((c) => mcqFriendly.includes(c.targetIntent));
-    out[idx === -1 ? 0 : idx].targetType = "MCQ";
-  } else {
-    let strongest = 0;
-    for (let i = 1; i < out.length; i++) {
-      if (out[i].mastery > out[strongest].mastery) strongest = i;
-    }
-    out[strongest].targetType = "OPEN_ENDED";
-  }
-  return out;
+export function buildObjectiveEvaluation(params: {
+  isCorrect: boolean;
+  conceptName: string;
+  picked: string;
+  expected: string;
+  explanation: string | null;
+}): PracticeEvaluation {
+  const { isCorrect, conceptName, picked, expected, explanation } = params;
+  const why = explanation ? ` ${explanation}` : "";
+  return {
+    score: isCorrect ? 100 : 0,
+    understanding_level: isCorrect ? "PROFICIENT" : "EMERGING",
+    concepts_demonstrated: isCorrect ? [conceptName] : [],
+    concepts_partial: [],
+    missing_concepts: isCorrect ? [] : [conceptName],
+    misconceptions: [],
+    reasoning_quality: isCorrect ? "strong" : "weak",
+    evidence_grounding: isCorrect ? "grounded" : "unsupported",
+    feedback: isCorrect
+      ? `Correct — "${expected}" is right.${why}`
+      : `Not quite — you answered "${picked.slice(0, 120)}"; the expected answer is "${expected}".${why}`,
+    suggested_improvement: isCorrect
+      ? `Lock it in: teach "${conceptName}" back in your own words.`
+      : `Review "${conceptName}" in your material, then reattempt a similar question.`,
+  };
 }
 
 /**
@@ -485,7 +531,8 @@ async function buildPracticeConceptStats(
 export async function selectPracticeConcepts(
   projectId: string,
   userId: string,
-  count: number = DEFAULT_PRACTICE_SIZE
+  count: number = DEFAULT_PRACTICE_SIZE,
+  level: PracticeLevel = "MIXED"
 ): Promise<PracticeCandidate[]> {
   const db = await getDb();
   const { data: concepts } = await db.from("concepts").select("id, name, description, source_material_id").eq("project_id", projectId);
@@ -499,7 +546,7 @@ export async function selectPracticeConcepts(
 
   const { stats, masteryByConcept: _m, materialHintByConcept, prerequisiteForWeak } = await buildPracticeConceptStats(projectId, userId, rows, db);
 
-  const candidates: PracticeCandidate[] = rows.map((c) => {
+  const candidates: Array<Omit<PracticeCandidate, "targetType">> = rows.map((c) => {
     const s = stats.get(c.id)!;
     const isPre = prerequisiteForWeak.has(c.id);
     const score = computePracticeScore({ ...s, isPrerequisiteForWeak: isPre });
@@ -511,6 +558,9 @@ export async function selectPracticeConcepts(
       trendDelta: s.trendDelta,
       frequencyCount: s.frequencyCount,
     });
+    // Learner-picked level overrides adaptive difficulty paper-wide.
+    const difficulty =
+      level === "MIXED" ? pickPracticeDifficulty(s.mastery, intent) : (level.toLowerCase() as PracticeDifficulty);
     return {
       ...c,
       mastery: s.mastery,
@@ -523,20 +573,15 @@ export async function selectPracticeConcepts(
       isPrerequisiteForWeak: isPre,
       score,
       targetIntent: intent,
-      targetDifficulty: pickPracticeDifficulty(s.mastery, intent),
-      targetType: pickPracticeQuestionType({
-        mastery: s.mastery,
-        isRecentMistake: s.isRecentMistake,
-        misconceptionCount: s.misconceptionCount,
-        intent,
-      }),
+      targetDifficulty: difficulty,
       materialHint: materialHintByConcept.get(c.id) ?? null,
     };
   });
   candidates.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   const picked = candidates.slice(0, Math.min(count, candidates.length));
-  // Assignments with 2+ questions always mix MCQ + open-ended.
-  return ensurePracticeTypeMix(picked);
+  // Deal paper slots weakest-first: Section A (quick checks on shaky ground)
+  // through Section C (descriptive stretch on solid ground).
+  return assignPracticeSlots(picked, defaultPracticeComposition(picked.length));
 }
 
 /** Best-effort material excerpts per concept for grounding (keyword ilike, like subconcepts). */
@@ -570,7 +615,8 @@ async function fetchEvidenceForConcepts(
 
 /* Gating: answers hidden until graded (mirrors quiz gating). Options are safe
    to show pre-answer (the learner needs them to respond); correct_answer /
-   explanation / reference_answer are disclosed only after grading. */
+   acceptable_answers / explanation / reference_answer are disclosed only
+   after grading. */
 export interface TakingPracticeQuestion {
   id: string;
   concept_id: string;
@@ -586,14 +632,16 @@ export interface TakingPracticeQuestion {
   grounding_material?: string | null;
   reference_answer?: string | null;
   correct_answer?: string | null;
+  acceptable_answers?: string[] | null;
   explanation?: string | null;
   answered: boolean;
 }
 
 export function stripPracticeQuestionForTaking(q: Record<string, unknown>): TakingPracticeQuestion {
-  const { reference_answer: _r, correct_answer: _c, explanation: _e, ...rest } = q;
+  const { reference_answer: _r, correct_answer: _c, acceptable_answers: _a, explanation: _e, ...rest } = q;
   void _r;
   void _c;
+  void _a;
   void _e;
   return { ...(rest as Omit<TakingPracticeQuestion, "answered">), answered: false };
 }
@@ -602,20 +650,23 @@ export function gatePracticeQuestionForReview(
   q: Record<string, unknown> & {
     reference_answer?: string | null;
     correct_answer?: string | null;
+    acceptable_answers?: string[] | null;
     explanation?: string | null;
   },
   answered: boolean
 ): TakingPracticeQuestion {
   if (answered) return { ...(q as Omit<TakingPracticeQuestion, "answered">), answered: true };
-  const { reference_answer: _r, correct_answer: _c, explanation: _e, ...rest } = q;
+  const { reference_answer: _r, correct_answer: _c, acceptable_answers: _a, explanation: _e, ...rest } = q;
   void _r;
   void _c;
+  void _a;
   void _e;
   return {
     ...(rest as Omit<TakingPracticeQuestion, "answered">),
     answered: false,
     reference_answer: null,
     correct_answer: null,
+    acceptable_answers: null,
     explanation: null,
   };
 }
@@ -624,10 +675,11 @@ export function gatePracticeQuestionForReview(
 
 export async function generatePracticeAssignment(
   projectId: string,
-  options?: { count?: number }
+  options?: { count?: number; level?: unknown }
 ): Promise<{
   assignment: { id: string; project_id: string; status: string; created_at: string; focus_summary: string | null };
   questions: TakingPracticeQuestion[];
+  level: PracticeLevel;
 }> {
   const userId = await getCurrentUserId();
   const db = await getDb();
@@ -642,19 +694,20 @@ export async function generatePracticeAssignment(
   const projectName = (project as { name: string }).name;
   const learningGoal = (project as { learning_goal: string | null }).learning_goal;
   const count = clampPracticeCount(options?.count);
+  const level = clampPracticeLevel(options?.level);
 
   // Idempotency: recent assignment with zero responses is reused (double-click guard).
   try {
     const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const { data: recent } = await db
       .from("practice_assignments")
-      .select("id, project_id, status, created_at, focus_summary")
+      .select("id, project_id, status, created_at, focus_summary, selection_context")
       .eq("project_id", projectId)
       .eq("user_id", userId)
       .gte("created_at", twoMinAgo)
       .order("created_at", { ascending: false })
       .limit(3);
-    for (const ra of (recent ?? []) as Array<{ id: string; project_id: string; status: string; created_at: string; focus_summary: string | null }>) {
+    for (const ra of (recent ?? []) as Array<{ id: string; project_id: string; status: string; created_at: string; focus_summary: string | null; selection_context: { level?: unknown } | null }>) {
       const { data: qIds } = await db.from("practice_questions").select("id").eq("assignment_id", ra.id);
       const ids = ((qIds ?? []) as Array<{ id: string }>).map((q) => q.id);
       let answered = 0;
@@ -663,28 +716,37 @@ export async function generatePracticeAssignment(
         answered = c ?? 0;
       }
       if (answered === 0 && ids.length > 0) {
+        // Only reuse when the pending paper matches the requested level —
+        // switching level must build a fresh paper.
+        if (clampPracticeLevel(ra.selection_context?.level) !== level) continue;
         const { data: qs, error: reuseErr } = await db
           .from("practice_questions")
           .select("id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question_type, question, options, selection_reason")
           .eq("assignment_id", ra.id)
           .order("created_at", { ascending: true });
-        if (reuseErr) throw reuseErr;
+        if (reuseErr) {
+          throwIfPracticeSectionsSetupMissing(reuseErr);
+          throw reuseErr;
+        }
         const enriched = await enrichQuestionsWithConceptNames(projectId, (qs ?? []) as Array<Record<string, unknown>>);
         return {
           assignment: { id: ra.id, project_id: ra.project_id, status: ra.status, created_at: ra.created_at, focus_summary: ra.focus_summary },
-          questions: enriched.map((q) => stripPracticeQuestionForTaking(q as Record<string, unknown>)),
+          questions: sortPracticeQuestionsBySection(enriched).map((q) =>
+            stripPracticeQuestionForTaking(q as Record<string, unknown>)
+          ),
+          level: clampPracticeLevel(ra.selection_context?.level),
         };
       }
     }
   } catch (e) {
-    // Setup errors (missing 007 tables / 008 columns) must surface immediately
+    // Setup errors (missing tables / columns) must surface immediately
     // instead of falling through to a doomed generation attempt.
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("007_practice") || msg.includes("008_practice_mcq")) throw e;
+    if (msg.includes("007_practice") || msg.includes("008_practice_mcq") || msg.includes("009_practice_sections")) throw e;
     // best-effort
   }
 
-  const selected = await selectPracticeConcepts(projectId, userId, count);
+  const selected = await selectPracticeConcepts(projectId, userId, count, level);
 
   // Misconception notes per concept for the prompt.
   let miscByConcept = new Map<string, string[]>();
@@ -729,6 +791,7 @@ export async function generatePracticeAssignment(
       materialHint: s.materialHint,
     })),
     evidence: evidenceFlat,
+    level,
   });
 
   const requestId = crypto.randomUUID();
@@ -786,10 +849,18 @@ export async function generatePracticeAssignment(
     }
   }
 
-  const focusSummary = selected.map((s) => `${s.name} (${s.targetType === "MCQ" ? "mcq" : s.targetIntent.toLowerCase()}, mastery ${Math.round(s.mastery)})`).join("; ").slice(0, 800);
+  const levelLabel = level === "MIXED" ? "mixed" : level.toLowerCase();
+  const typeTag = (s: PracticeCandidate): string => {
+    if (s.targetType === "MCQ") return "mcq";
+    if (s.targetType === "TRUE_FALSE") return "true-false";
+    if (s.targetType === "ONE_WORD") return "one-word";
+    return s.targetIntent.toLowerCase();
+  };
+  const focusSummary = (`Level: ${levelLabel} · ` + selected.map((s) => `${s.name} (${typeTag(s)}, mastery ${Math.round(s.mastery)})`).join("; ")).slice(0, 800);
   const selectionContext = {
     generated_at: new Date().toISOString(),
     learning_goal: learningGoal,
+    level,
     concepts: selected.map((s) => ({
       concept_id: s.id,
       name: s.name,
@@ -818,37 +889,43 @@ export async function generatePracticeAssignment(
   const assignmentId = (assignment as { id: string }).id;
 
   const nameById = new Map(selected.map((s) => [s.id, s.name]));
-  // LLMs overwhelmingly place the correct MCQ answer first, so users quickly
+  // LLMs overwhelmingly place the correct option first, so users quickly
   // learn "option A is always right". Shuffle server-side (Fisher-Yates) so
   // position carries zero signal. Grading compares response strings against
   // correct_answer, so shuffling is grading-safe (same pattern as quiz).
-  const rowsToInsert = validated!.questions.map((q) => {
-    const options = q.options ? [...q.options] : null;
-    if (q.question_type === "MCQ" && options) {
-      for (let i = options.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [options[i], options[j]] = [options[j], options[i]];
+  // Rows are pre-sorted exam-paper style (A -> B -> C) so created_at order
+  // already reflects the paper.
+  const rowsToInsert = sortPracticeQuestionsBySection(
+    validated!.questions.map((q) => {
+      const options = q.options ? [...q.options] : null;
+      if ((q.question_type === "MCQ" || q.question_type === "TRUE_FALSE") && options) {
+        for (let i = options.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [options[i], options[j]] = [options[j], options[i]];
+        }
       }
-    }
-    return {
-      assignment_id: assignmentId,
-      concept_id: q.concept_id,
-      related_concept_ids: q.related_concept_ids,
-      subconcept_label: q.subconcept_label,
-      intent: q.intent,
-      difficulty: q.difficulty,
-      question_type: q.question_type,
-      question: q.question,
-      options,
-      correct_answer: q.correct_answer,
-      explanation: q.explanation,
-      reference_answer: q.reference_answer,
-      grounding: { material_hint: selected.find((s) => s.id === q.concept_id)?.materialHint ?? null },
-      selection_reason: q.selection_reason,
-    };
-  });
+      return {
+        assignment_id: assignmentId,
+        concept_id: q.concept_id,
+        related_concept_ids: q.related_concept_ids,
+        subconcept_label: q.subconcept_label,
+        intent: q.intent,
+        difficulty: q.difficulty,
+        question_type: q.question_type,
+        question: q.question,
+        options,
+        correct_answer: q.correct_answer,
+        acceptable_answers: q.acceptable_answers,
+        explanation: q.explanation,
+        reference_answer: q.reference_answer,
+        grounding: { material_hint: selected.find((s) => s.id === q.concept_id)?.materialHint ?? null },
+        selection_reason: q.selection_reason,
+      };
+    })
+  );
   const { data: inserted, error: qErr } = await db.from("practice_questions").insert(rowsToInsert).select("id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question_type, question, options, selection_reason");
   if (qErr || !inserted) {
+    throwIfPracticeSectionsSetupMissing(qErr);
     throwIfPracticeMcqColumnsMissing(qErr);
     throwIfPracticeTablesMissing(qErr, "practice_questions");
     // Assignment row without questions is useless — remove it so retries start clean.
@@ -881,7 +958,7 @@ export async function generatePracticeAssignment(
     eventType: "PRACTICE_STARTED",
     entityType: "practice_assignment",
     entityId: assignmentId,
-    metadata: { count: rowsToInsert.length, concepts: expectedIds, focus: focusSummary },
+    metadata: { count: rowsToInsert.length, concepts: expectedIds, focus: focusSummary, level },
   });
 
   const enriched = ((inserted ?? []) as Array<Record<string, unknown>>).map((q) => ({
@@ -890,7 +967,8 @@ export async function generatePracticeAssignment(
   }));
   return {
     assignment: assignment as { id: string; project_id: string; status: string; created_at: string; focus_summary: string | null },
-    questions: enriched.map((q) => stripPracticeQuestionForTaking(q)),
+    questions: sortPracticeQuestionsBySection(enriched).map((q) => stripPracticeQuestionForTaking(q)),
+    level,
   };
 }
 
@@ -955,6 +1033,7 @@ export async function getPracticeAssignmentWithQuestions(projectId: string, assi
     .eq("assignment_id", assignmentId)
     .order("created_at", { ascending: true });
   if (qErr) {
+    throwIfPracticeSectionsSetupMissing(qErr);
     throwIfPracticeMcqColumnsMissing(qErr);
     throw new Error(qErr.message);
   }
@@ -972,10 +1051,12 @@ export async function getPracticeAssignmentWithQuestions(projectId: string, assi
     const { data: concepts } = await db.from("concepts").select("id, name").in("id", conceptIds);
     for (const c of ((concepts ?? []) as Array<{ id: string; name: string }>)) conceptMap.set(c.id, c.name);
   }
-  const enriched = ((questions ?? []) as Array<Record<string, unknown> & { id: string; concept_id: string }>).map((q) => ({
-    ...stripPracticeQuestionForTaking(q),
-    concept_name: conceptMap.get(q.concept_id) ?? "Unknown",
-  }));
+  const enriched = sortPracticeQuestionsBySection(
+    ((questions ?? []) as Array<Record<string, unknown> & { id: string; concept_id: string }>).map((q) => ({
+      ...stripPracticeQuestionForTaking(q),
+      concept_name: conceptMap.get(q.concept_id) ?? "Unknown",
+    }))
+  );
   return { assignment, questions: enriched, responses: responseMap, responsesList: Array.from(responseMap.values()) };
 }
 
@@ -984,12 +1065,15 @@ export async function getPracticeAssignmentDetail(projectId: string, assignmentI
   const userId = await getCurrentUserId();
   const db = await getDb();
   const qIds = base.questions.map((q) => q.id);
-  let fullMap = new Map<string, { reference_answer: string | null; correct_answer: string | null; explanation: string | null }>();
+  let fullMap = new Map<string, { reference_answer: string | null; correct_answer: string | null; acceptable_answers: string[] | null; explanation: string | null }>();
   if (qIds.length > 0) {
-    const { data: full, error: fullErr } = await db.from("practice_questions").select("id, reference_answer, correct_answer, explanation").in("id", qIds);
-    if (fullErr) throwIfPracticeMcqColumnsMissing(fullErr);
-    for (const f of ((full ?? []) as Array<{ id: string; reference_answer: string | null; correct_answer: string | null; explanation: string | null }>)) {
-      fullMap.set(f.id, { reference_answer: f.reference_answer, correct_answer: f.correct_answer ?? null, explanation: f.explanation ?? null });
+    const { data: full, error: fullErr } = await db.from("practice_questions").select("id, reference_answer, correct_answer, acceptable_answers, explanation").in("id", qIds);
+    if (fullErr) {
+      throwIfPracticeSectionsSetupMissing(fullErr);
+      throwIfPracticeMcqColumnsMissing(fullErr);
+    }
+    for (const f of ((full ?? []) as Array<{ id: string; reference_answer: string | null; correct_answer: string | null; acceptable_answers: string[] | null; explanation: string | null }>)) {
+      fullMap.set(f.id, { reference_answer: f.reference_answer, correct_answer: f.correct_answer ?? null, acceptable_answers: f.acceptable_answers ?? null, explanation: f.explanation ?? null });
     }
   }
   const questions = base.questions.map((q) => {
@@ -1000,6 +1084,7 @@ export async function getPracticeAssignmentDetail(projectId: string, assignmentI
           ...q,
           reference_answer: full?.reference_answer ?? null,
           correct_answer: full?.correct_answer ?? null,
+          acceptable_answers: full?.acceptable_answers ?? null,
           explanation: full?.explanation ?? null,
         },
         base.responses.has(q.id)
@@ -1050,6 +1135,7 @@ export async function submitPracticeResponse(
   assignmentStatus: string;
   /** Disclosed because this question is now being graded (mirrors quiz submit). */
   correct_answer: string | null;
+  acceptable_answers: string[] | null;
   explanation: string | null;
   reference_answer: string | null;
 }> {
@@ -1083,11 +1169,12 @@ export async function submitPracticeResponse(
 
   const { data: question, error: qErr } = await db
     .from("practice_questions")
-    .select("id, assignment_id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question_type, question, options, correct_answer, explanation, reference_answer, grounding, selection_reason")
+    .select("id, assignment_id, concept_id, related_concept_ids, subconcept_label, intent, difficulty, question_type, question, options, correct_answer, acceptable_answers, explanation, reference_answer, grounding, selection_reason")
     .eq("id", questionId)
     .eq("assignment_id", assignmentId)
     .single();
   if (qErr || !question) {
+    throwIfPracticeSectionsSetupMissing(qErr);
     throwIfPracticeMcqColumnsMissing(qErr);
     throwIfPracticeTablesMissing(qErr, "practice_questions");
     throw new Error("Practice question not found in this assignment");
@@ -1095,10 +1182,12 @@ export async function submitPracticeResponse(
   const qRow = question as {
     id: string; assignment_id: string; concept_id: string; related_concept_ids: string[] | null;
     subconcept_label: string | null; intent: string; difficulty: string; question_type: string | null;
-    question: string; options: string[] | null; correct_answer: string | null; explanation: string | null;
+    question: string; options: string[] | null; correct_answer: string | null; acceptable_answers: string[] | null;
+    explanation: string | null;
     reference_answer: string | null; grounding: unknown; selection_reason: string | null;
   };
-  const qType = (qRow.question_type ?? "OPEN_ENDED") as "MCQ" | "OPEN_ENDED";
+  const qType = (qRow.question_type ?? "OPEN_ENDED") as PracticeQuestionType;
+  const isDeterministic = qType !== "OPEN_ENDED";
 
   // Idempotency: graded response already exists -> return it.
   const { data: existing } = await db.from("practice_responses").select("id, question_id, response, confidence, score, evaluation, created_at").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
@@ -1112,9 +1201,10 @@ export async function submitPracticeResponse(
       calibration: calibrateConfidence(ea.confidence, Number(ea.score)),
       assignmentCompleted: completion.completedNow || completion.status === "completed",
       assignmentStatus: completion.status,
-      correct_answer: qType === "MCQ" ? qRow.correct_answer : null,
-      explanation: qType === "MCQ" ? qRow.explanation : null,
-      reference_answer: qType === "MCQ" ? null : qRow.reference_answer,
+      correct_answer: isDeterministic ? qRow.correct_answer : null,
+      acceptable_answers: qType === "ONE_WORD" ? (qRow.acceptable_answers ?? null) : null,
+      explanation: isDeterministic ? qRow.explanation : null,
+      reference_answer: isDeterministic ? null : qRow.reference_answer,
     };
   }
 
@@ -1185,28 +1275,22 @@ export async function submitPracticeResponse(
   const requestId = crypto.randomUUID();
   const start = Date.now();
   let evaluation: PracticeEvaluation;
-  if (qType === "MCQ") {
-    // Deterministic grading — no LLM call, so multiple-choice evaluation can
+  if (isDeterministic) {
+    // Deterministic grading — no LLM call, so Section A/B evaluation can
     // never be "temporarily unavailable" (same pattern as quiz MCQ).
     const expected = (qRow.correct_answer ?? "").trim();
     if (!expected) throw new Error("This practice question is missing its answer key — please start a new assignment.");
-    const isCorrect = trimmed === expected;
-    evaluation = {
-      score: isCorrect ? 100 : 0,
-      understanding_level: isCorrect ? "PROFICIENT" : "EMERGING",
-      concepts_demonstrated: isCorrect ? [conceptName] : [],
-      concepts_partial: [],
-      missing_concepts: isCorrect ? [] : [conceptName],
-      misconceptions: [],
-      reasoning_quality: isCorrect ? "strong" : "weak",
-      evidence_grounding: isCorrect ? "grounded" : "unsupported",
-      feedback: isCorrect
-        ? `Correct — "${expected}" is right.${qRow.explanation ? ` ${qRow.explanation}` : ""}`
-        : `Not quite — the correct answer is "${expected}".${qRow.explanation ? ` ${qRow.explanation}` : ""}`,
-      suggested_improvement: isCorrect
-        ? `Lock it in: teach "${conceptName}" back in your own words.`
-        : `Review "${conceptName}" in your material, then reattempt a similar question.`,
-    };
+    const isCorrect =
+      qType === "ONE_WORD"
+        ? isShortAnswerCorrect(trimmed, [qRow.correct_answer, ...(qRow.acceptable_answers ?? [])])
+        : trimmed === expected;
+    evaluation = buildObjectiveEvaluation({
+      isCorrect,
+      conceptName,
+      picked: trimmed,
+      expected,
+      explanation: qRow.explanation,
+    });
     await db.from("practice_responses").update({ score: evaluation.score, evaluation }).eq("id", responseId);
   } else {
   try {
@@ -1333,9 +1417,10 @@ export async function submitPracticeResponse(
     calibration: calibrateConfidence(conf, evaluation.score),
     assignmentCompleted: completion.completedNow || completion.status === "completed",
     assignmentStatus: completion.status,
-    correct_answer: qType === "MCQ" ? qRow.correct_answer : null,
-    explanation: qType === "MCQ" ? qRow.explanation : null,
-    reference_answer: qType === "MCQ" ? null : qRow.reference_answer,
+    correct_answer: isDeterministic ? qRow.correct_answer : null,
+    acceptable_answers: qType === "ONE_WORD" ? (qRow.acceptable_answers ?? null) : null,
+    explanation: isDeterministic ? qRow.explanation : null,
+    reference_answer: isDeterministic ? null : qRow.reference_answer,
   };
 }
 
