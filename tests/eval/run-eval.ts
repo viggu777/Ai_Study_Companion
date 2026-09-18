@@ -16,6 +16,7 @@ import { validateRecommendationOutput, buildRecommendationUserPrompt, RECOMMENDA
 import { computeNewMastery } from "@/services/mastery.service";
 import { classifyTrend } from "@/services/growth.service";
 import { RELEVANCE_THRESHOLD } from "@/lib/rag/retrieve";
+import { EVAL_SUITE_VERSION, makeEvalRunId } from "@/services/evaluation.service";
 
 type Result = { id: string; passed: boolean; details: string; output?: unknown; latencyMs?: number };
 
@@ -230,9 +231,14 @@ async function run() {
 
   const totalTests = Object.values(results).flat().length;
   const passedTests = Object.values(results).flat().filter(r=> r.passed).length;
+  const finished = new Date().toISOString();
+  const runId = makeEvalRunId(new Date(finished));
   const summary = {
+    runId,
+    suiteVersion: EVAL_SUITE_VERSION,
+    timestamp: finished,
     started,
-    finished: new Date().toISOString(),
+    finished,
     totalTests,
     passedTests,
     failedTests: totalTests - passedTests,
@@ -242,8 +248,36 @@ async function run() {
 
   const outPath = path.resolve("tests/eval/results.json");
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  // Preserve the previous latest run (real history, never invented): archive
+  // it into history/ before overwriting so Admin can compare runs.
+  try {
+    if (fs.existsSync(outPath)) {
+      const prevRaw = fs.readFileSync(outPath, "utf-8");
+      const prev = JSON.parse(prevRaw) as { runId?: string; started?: string; totalTests?: number };
+      const historyDir = path.resolve("tests/eval/history");
+      fs.mkdirSync(historyDir, { recursive: true });
+      const prevId =
+        typeof prev.runId === "string" && prev.runId.trim()
+          ? prev.runId
+          : `archived-${(prev.started ?? started).replace(/[:.]/g, "-")}`;
+      const archivePath = path.join(historyDir, `${prevId}.json`);
+      if (prevId !== runId && !fs.existsSync(archivePath) && typeof prev.totalTests === "number") {
+        fs.writeFileSync(archivePath, prevRaw);
+        console.log(`Archived previous run to ${archivePath}`);
+      }
+      // Cap history at 20 files (oldest first).
+      const files = fs.readdirSync(historyDir).filter((f) => f.endsWith(".json")).sort();
+      while (files.length > 20) {
+        const oldest = files.shift();
+        if (!oldest) break;
+        fs.unlinkSync(path.join(historyDir, oldest));
+      }
+    }
+  } catch (e) {
+    console.error("Previous-run archival skipped:", e instanceof Error ? e.message : String(e));
+  }
   fs.writeFileSync(outPath, JSON.stringify(summary, null, 2));
-  console.log(`\nEvaluation run ${started}`);
+  console.log(`\nEvaluation run ${runId} (${started} → ${finished})`);
   console.log(`Total ${totalTests}  Passed ${passedTests}  Failed ${totalTests - passedTests}`);
   for (const [cat, arr] of Object.entries(results)) {
     const p = arr.filter(r=> r.passed).length;
@@ -256,6 +290,16 @@ async function run() {
   const altPath = path.resolve("evaluation-results.json");
   fs.writeFileSync(altPath, JSON.stringify(summary, null, 2));
   console.log(`Wrote ${altPath} (for /admin/ai-evaluation)`);
+
+  // Per-run history file so Admin can show run-over-run comparison.
+  try {
+    const historyDir = path.resolve("tests/eval/history");
+    fs.mkdirSync(historyDir, { recursive: true });
+    fs.writeFileSync(path.join(historyDir, `${runId}.json`), JSON.stringify(summary, null, 2));
+    console.log(`Wrote tests/eval/history/${runId}.json (run history)`);
+  } catch (e) {
+    console.error("History write skipped:", e instanceof Error ? e.message : String(e));
+  }
 
   if (passedTests !== totalTests) {
     console.error("\nSome fixtures failed — see details above");
