@@ -111,7 +111,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projects/${projectId}/quiz`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 5 }),
+        body: JSON.stringify({ count: 10 }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to generate quiz");
@@ -573,7 +573,7 @@ export default function QuizClient({ projectId }: { projectId: string }) {
           <div className="min-w-0 flex-1">
             <h2 className="text-lg font-semibold tracking-tight text-stone-900">Adaptive quiz</h2>
             <p className="mt-1 text-sm leading-relaxed text-stone-500">
-              5 questions per round, picked from your weakest concepts and recent mistakes. Difficulty adapts to your mastery — answer well and it gets harder.
+              10 questions per round, picked from your weakest concepts and recent mistakes. Difficulty adapts to your mastery — answer well and it gets harder.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button onClick={startQuiz} disabled={generating}>

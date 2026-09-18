@@ -13,8 +13,12 @@ export async function POST(
     const rl = checkRateLimit(`quiz-submit:${userId}`, 60, 60_000);
     if (!rl.allowed) return rateLimitedResponse(rl.retryAfterSec);
     const body = await request.json().catch(() => ({}));
-    const questionId = (body.questionId as string) ?? (body.question_id as string) ?? (body.question_id as string);
-    const response = (body.response as string) ?? (body.answer as string) ?? "";
+    const questionId =
+      (body.questionId as unknown) ?? (body.question_id as unknown) ?? "";
+    const response = (body.response as unknown) ?? (body.answer as unknown) ?? "";
+    if (typeof questionId !== "string" || !questionId) {
+      return NextResponse.json({ error: "questionId is required" }, { status: 400 });
+    }
     if (!questionId) return NextResponse.json({ error: "questionId is required" }, { status: 400 });
     if (!response || !String(response).trim()) return NextResponse.json({ error: "response is required" }, { status: 400 });
 

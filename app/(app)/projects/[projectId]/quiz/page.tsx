@@ -15,11 +15,8 @@ export default async function QuizPage({
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-stone-900">Quiz — {project.name}</h1>
-        <p className="text-sm text-stone-600">Adaptive quiz — weaker and recently-missed concepts appear more often</p>
-      </div>
-      <div className="w-full py-2">
+      <p className="mb-4 text-sm text-stone-500">Adaptive quiz — weaker and recently-missed concepts appear more often.</p>
+      <div className="w-full">
         <QuizClient projectId={projectId} />
       </div>
     </div>

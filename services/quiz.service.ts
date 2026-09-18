@@ -19,7 +19,7 @@ import {
   type AssessmentEvaluation,
 } from "@/ai/assessment";
 
-const DEFAULT_QUIZ_SIZE = 5;
+const DEFAULT_QUIZ_SIZE = 10;
 
 // Weights / thresholds for adaptive selection — combine ≥3 signals
 const SCORE = {
@@ -762,10 +762,14 @@ export async function submitAnswer(
   const qRow = question as { id: string; quiz_id: string; concept_id: string; type: string; question: string; options: unknown; correct_answer: string | null; explanation: string | null };
   const qType = qRow.type as "MCQ" | "OPEN_ENDED";
 
-  // Idempotency per question: if already answered, return existing without side effects
+  // Idempotency per question: if already answered AND graded, return existing
+  // without side effects. An open-ended answer left ungraded by a failed
+  // evaluation attempt (score/evaluation null) falls through to re-grading
+  // below instead of being returned as final.
   const { data: existingAnswer } = await db.from("answers").select("id, question_id, response, is_correct, score, evaluation, created_at").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
-  if (existingAnswer) {
-    const ea = existingAnswer as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
+  const ea = (existingAnswer ?? null) as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string } | null;
+  const needsGrading = !!ea && qType === "OPEN_ENDED" && ea.score === null && ea.evaluation == null;
+  if (ea && !needsGrading) {
     // Still ensure quiz completion is idempotent — check if already completed, if not and now all answered, try to complete
     const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
     return {
@@ -788,7 +792,35 @@ export async function submitAnswer(
     score = isCorrect ? 100 : 0;
     evaluation = null;
   } else {
-    // Open-ended: AI evaluation via structured output
+    // Open-ended: AI evaluation via structured output.
+    // The answer row is persisted FIRST with null grade (pending) so a
+    // provider failure never loses the student's response — resubmitting
+    // re-grades the same row. The quiz cannot complete while any answer is
+    // still pending (see tryCompleteQuizIfNeeded).
+    let answerId: string | null = needsGrading && ea ? ea.id : null;
+    if (!answerId) {
+      const { data: pending, error: pendErr } = await db
+        .from("answers")
+        .insert({ question_id: questionId, user_id: userId, response: trimmed, is_correct: null, score: null, evaluation: null })
+        .select("id")
+        .single();
+      if (pendErr || !pending) {
+        // Concurrent insert race — reuse the freshly inserted row.
+        const { data: race } = await db.from("answers").select("id, score, evaluation").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
+        const raceRow = race as { id: string; score: number | string | null; evaluation: unknown } | null;
+        if (raceRow && (raceRow.score !== null || raceRow.evaluation != null)) {
+          // Other request already graded it — return that row via the normal path.
+          return submitAnswer(projectId, quizId, questionId, response);
+        }
+        if (raceRow) {
+          answerId = raceRow.id;
+        } else {
+          throw new Error("Failed to persist answer");
+        }
+      } else {
+        answerId = (pending as { id: string }).id;
+      }
+    }
     // Fetch concept for prompt context
     let conceptName = "Unknown";
     let conceptDesc: string | null = null;
@@ -824,38 +856,52 @@ export async function submitAnswer(
       score = evaluation.score;
       isCorrect = score >= 60;
       await logAiOperation({ userId, projectId, feature: "OPEN_ENDED_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: true });
+      await db.from("answers").update({ is_correct: isCorrect, score, evaluation }).eq("id", answerId);
     } catch (e) {
       const latencyMs = Date.now() - start;
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error(`[OPEN_ENDED_EVALUATION ${requestId}] failed:`, errMsg);
       await logAiOperation({ userId, projectId, feature: "OPEN_ENDED_EVALUATION", model: CHAT_MODEL_NAME, requestId, latencyMs, success: false, error: errMsg.slice(0, 2000) });
-      throw new Error(`Evaluation failed: ${errMsg}`);
+      // Row stays pending — the answer is safe; the client surfaces this and
+      // resubmitting re-grades the same row.
+      throw new Error("Grading temporarily unavailable — your answer is saved. Please submit again to retry grading.");
     }
   }
 
-  // Persist answer
-  const { data: inserted, error: insErr } = await db
-    .from("answers")
-    .insert({ question_id: questionId, user_id: userId, response: trimmed, is_correct: isCorrect, score, evaluation })
-    .select()
-    .single();
-  if (insErr || !inserted) {
-    // Handle race where another request inserted concurrently
-    const { data: race } = await db.from("answers").select("id, question_id, response, is_correct, score, evaluation, created_at").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
-    if (race) {
-      const ea = race as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
-      const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
-      return {
-        answer: { id: ea.id, question_id: ea.question_id, response: ea.response, is_correct: ea.is_correct, score: ea.score !== null ? Number(ea.score) : null, evaluation: ea.evaluation as AssessmentEvaluation | null, created_at: ea.created_at },
-        correct_answer: qRow.correct_answer,
-        explanation: qRow.explanation,
-        quizCompleted: completion.completedNow || completion.status === "completed",
-        quizStatus: completion.status,
-      };
+  // Persist answer (MCQ reaches here ungraded; open-ended was already
+  // inserted as pending and updated with its grade above).
+  let answerRow: { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
+  if (qType === "MCQ") {
+    const { data: inserted, error: insErr } = await db
+      .from("answers")
+      .insert({ question_id: questionId, user_id: userId, response: trimmed, is_correct: isCorrect, score, evaluation })
+      .select()
+      .single();
+    if (insErr || !inserted) {
+      // Handle race where another request inserted concurrently
+      const { data: race } = await db.from("answers").select("id, question_id, response, is_correct, score, evaluation, created_at").eq("question_id", questionId).eq("user_id", userId).maybeSingle();
+      if (race) {
+        const raceRow = race as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
+        const completion = await tryCompleteQuizIfNeeded(projectId, quizId, userId, spaceId);
+        return {
+          answer: { id: raceRow.id, question_id: raceRow.question_id, response: raceRow.response, is_correct: raceRow.is_correct, score: raceRow.score !== null ? Number(raceRow.score) : null, evaluation: raceRow.evaluation as AssessmentEvaluation | null, created_at: raceRow.created_at },
+          correct_answer: qRow.correct_answer,
+          explanation: qRow.explanation,
+          quizCompleted: completion.completedNow || completion.status === "completed",
+          quizStatus: completion.status,
+        };
+      }
+      throw new Error("Failed to persist answer");
     }
-    throw new Error("Failed to persist answer");
+    answerRow = inserted as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
+  } else {
+    const { data: graded } = await db.from("answers").select("id, question_id, response, is_correct, score, evaluation, created_at").eq("question_id", questionId).eq("user_id", userId).single();
+    if (!graded) throw new Error("Failed to persist answer");
+    answerRow = graded as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
+    isCorrect = answerRow.is_correct;
+    score = answerRow.score !== null ? Number(answerRow.score) : null;
+    evaluation = answerRow.evaluation as AssessmentEvaluation | null;
   }
-  const answerRow = inserted as { id: string; question_id: string; response: string; is_correct: boolean | null; score: number | string | null; evaluation: unknown; created_at: string };
 
   await emitLearningEvent({ userId, spaceId, projectId, eventType: "QUESTION_ANSWERED", entityType: "answer", entityId: answerRow.id, metadata: { question_id: questionId, quiz_id: quizId, is_correct: isCorrect, score } });
 
@@ -881,8 +927,15 @@ async function tryCompleteQuizIfNeeded(projectId: string, quizId: string, userId
   const qIds = ((questions ?? []) as Array<{ id: string }>).map((q) => q.id);
   if (qIds.length === 0) return { completedNow: false, status: currentStatus };
 
-  const { data: answers } = await db.from("answers").select("question_id").eq("user_id", userId).in("question_id", qIds);
-  const answeredSet = new Set(((answers ?? []) as Array<{ question_id: string }>).map((a) => a.question_id));
+  // Only graded answers count — an open-ended answer left pending by a
+  // failed evaluation must be re-graded (resubmit) before the quiz completes,
+  // so mastery never trains on a null grade.
+  const { data: answers } = await db.from("answers").select("question_id, score").eq("user_id", userId).in("question_id", qIds);
+  const answeredSet = new Set(
+    (((answers ?? []) as Array<{ question_id: string; score: number | string | null }>)
+      .filter((a) => a.score !== null)
+      .map((a) => a.question_id))
+  );
   if (answeredSet.size < qIds.length) return { completedNow: false, status: currentStatus };
 
   // All answered — mark completed
