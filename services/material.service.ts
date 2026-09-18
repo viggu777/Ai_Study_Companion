@@ -224,10 +224,14 @@ export async function retryMaterial(materialId: string) {
       data: { materialId, projectId: mat.project_id, userId, spaceId: project?.space_id ?? null },
     });
   } catch (e) {
-    // Same serverless note as uploadMaterial: process inline, never setTimeout.
-    console.error("Retry Inngest send failed, processing inline within request:", e);
-    await processMaterial(materialId);
+    console.error("Retry Inngest send failed, will still process inline:", e);
   }
+  // Retry always processes inline within this request (route sets
+  // maxDuration=60). This heals rows stuck in QUEUED when Inngest accepted
+  // the event but has no synced function running — the case where send
+  // succeeds yet nothing ever processes. The claim guard in processMaterial
+  // makes a late Inngest delivery a safe no-op.
+  await processMaterial(materialId);
   return { id: materialId, status: "QUEUED" as const };
 }
 
