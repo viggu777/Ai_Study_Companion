@@ -9,4 +9,5 @@ npm-debug.log*
 tsconfig.tsbuildinfo
 evaluation-results.json
 tests/eval/results.json
+tests/eval/history/
 .vercel
