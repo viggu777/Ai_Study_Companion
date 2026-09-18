@@ -37,12 +37,13 @@ export async function POST(
     const file = formData.get("file") as File | null;
     if (!file) return NextResponse.json({ error: "No file provided" }, { status: 400 });
     const result = await uploadMaterial(projectId, file);
-    return NextResponse.json(result, { status: 202 });
+    // Duplicate content reuses the existing row (no new job) → 200; fresh uploads → 202.
+    return NextResponse.json(result, { status: result.duplicate ? 200 : 202 });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (isAuthError(e)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     if (msg.includes("Project not found")) return NextResponse.json({ error: msg }, { status: 404 });
-    if (msg.includes("Only PDF") || msg.includes("too large") || msg.includes("empty")) {
+    if (msg.includes("Only PDF or image") || msg.includes("Only PDF") || msg.includes("too large") || msg.includes("empty")) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }
     // Storage or other failures bubble as 500 but material already marked FAILED where applicable

@@ -40,6 +40,7 @@ export default function MaterialsClient({
   const [materials, setMaterials] = useState<Material[]>(initialMaterials);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const highlightRef = useRef<HTMLTableRowElement | null>(null);
@@ -72,15 +73,26 @@ export default function MaterialsClient({
   async function handleUpload(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
+    setNotice("");
     const form = e.currentTarget;
     const input = form.elements.namedItem("file") as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) {
-      setError("Please select a PDF file");
+      setError("Please select a PDF or image file");
       return;
     }
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setError("Only PDF files are allowed");
+    const lower = file.name.toLowerCase();
+    const isPdf = file.type === "application/pdf" || lower.endsWith(".pdf");
+    const isImage =
+      file.type === "image/png" ||
+      file.type === "image/jpeg" ||
+      file.type === "image/webp" ||
+      lower.endsWith(".png") ||
+      lower.endsWith(".jpg") ||
+      lower.endsWith(".jpeg") ||
+      lower.endsWith(".webp");
+    if (!isPdf && !isImage) {
+      setError("Only PDF or image files are allowed (pdf, png, jpg, jpeg, webp)");
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
@@ -98,6 +110,13 @@ export default function MaterialsClient({
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Upload failed");
+        setUploading(false);
+        return;
+      }
+      if (data.duplicate) {
+        setNotice("This exact file is already in this project — reusing the existing upload (no duplicate processing).");
+        setTimeout(refresh, 800);
+        form.reset();
         setUploading(false);
         return;
       }
@@ -167,17 +186,17 @@ export default function MaterialsClient({
         <form onSubmit={handleUpload} className="flex flex-col gap-4 sm:flex-row sm:items-end">
           <div className="flex-1">
             <label htmlFor="material-file" className="mb-1.5 block text-sm font-medium text-stone-700">
-              Upload PDF
+              Upload PDF or image
             </label>
             <input
               id="material-file"
               name="file"
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,image/png,image/jpeg,image/webp,.pdf,.png,.jpg,.jpeg,.webp"
               className="block w-full cursor-pointer rounded-lg border border-dashed border-stone-300 bg-stone-50 px-3 py-2.5 text-sm text-stone-600 transition-colors file:mr-4 file:rounded-md file:border-0 file:bg-sky-600 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:border-sky-600 hover:file:bg-stone-800"
               disabled={uploading}
             />
-            <p className="mt-1.5 text-xs text-stone-400">PDF only, max 10 MB. Status moves QUEUED → PROCESSING → READY.</p>
+            <p className="mt-1.5 text-xs text-stone-400">PDF or image (png/jpg/webp), max 10 MB. Scanned PDFs and photos use free OCR (up to 5 scanned pages). Status moves QUEUED → PROCESSING → READY.</p>
           </div>
           <Button type="submit" disabled={uploading} className="shrink-0">
             {uploading ? <Spinner className="text-white" /> : <UploadIcon className="h-4 w-4" />}
@@ -187,12 +206,15 @@ export default function MaterialsClient({
       </Card>
 
       {error && <Alert>{error}</Alert>}
+      {notice && (
+        <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">{notice}</div>
+      )}
 
       {isEmpty ? (
         <EmptyState
           icon={<BookIcon className="h-5 w-5" />}
           title="No materials yet"
-          description="Upload a PDF to extract concepts and unlock the Tutor, quizzes and recommendations."
+          description="Upload a PDF or an image (photo/screenshot of notes) to extract concepts and unlock the Tutor, quizzes and recommendations."
         />
       ) : (
         <Card className="overflow-hidden">
