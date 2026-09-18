@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { QuizIcon, ArrowRightIcon } from "@/components/icons";
@@ -78,12 +78,25 @@ function StepDots({ total, current, answered }: { total: number; current: number
   );
 }
 
-export default function QuizClient({ projectId }: { projectId: string }) {
+export default function QuizClient({
+  projectId,
+  initialCount,
+  autostart,
+}: {
+  projectId: string;
+  /** deep-link from Tutor: pre-select the question count */
+  initialCount?: number;
+  /** deep-link from Tutor: start the round automatically on load */
+  autostart?: boolean;
+}) {
   const [quizzes, setQuizzes] = useState<QuizListItem[]>([]);
   const [fetching, setFetching] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [quizCount, setQuizCount] = useState<number>(QUIZ_DEFAULT_COUNT);
+  const [quizCount, setQuizCount] = useState<number>(
+    initialCount !== undefined ? clampQuizCount(initialCount) : QUIZ_DEFAULT_COUNT
+  );
+  const autoStartedRef = useRef(false);
   const [activeQuiz, setActiveQuiz] = useState<ActiveQuiz | null>(null);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string>("");
@@ -138,6 +151,16 @@ export default function QuizClient({ projectId }: { projectId: string }) {
       setGenerating(false);
     }
   };
+
+  // Deep-link autostart from the Tutor setup dialog (?count=N&start=1) —
+  // fires once with the pre-selected count (StrictMode-safe via ref).
+  useEffect(() => {
+    if (autostart && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      startQuiz();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadQuiz = async (quizId: string) => {
     setError(null);

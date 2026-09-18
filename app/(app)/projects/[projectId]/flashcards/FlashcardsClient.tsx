@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Spinner } from "@/components/ui";
 import { ArrowRightIcon } from "@/components/icons";
 
@@ -20,14 +20,39 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-export default function FlashcardsClient({ projectId }: { projectId: string }) {
+const FLASHCARD_COUNT_OPTIONS = [5, 10, 15, 20];
+const FLASHCARD_DEFAULT_COUNT = 10;
+
+function clampFlashcardCount(n: number): number {
+  if (!Number.isFinite(n)) return FLASHCARD_DEFAULT_COUNT;
+  if (FLASHCARD_COUNT_OPTIONS.includes(Math.floor(n))) return Math.floor(n);
+  // Snap arbitrary deep-link values to the nearest supported size.
+  return FLASHCARD_COUNT_OPTIONS.reduce((best, opt) =>
+    Math.abs(opt - n) < Math.abs(best - n) ? opt : best
+  );
+}
+
+export default function FlashcardsClient({
+  projectId,
+  initialCount,
+  autostart,
+}: {
+  projectId: string;
+  /** deep-link from Tutor: pre-select the deck size */
+  initialCount?: number;
+  /** deep-link from Tutor: build the deck automatically on load */
+  autostart?: boolean;
+}) {
   const [cards, setCards] = useState<Card[]>([]);
   const [idx, setIdx] = useState(0);
   const [flipped, setFlipped] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [known, setKnown] = useState<Set<number>>(new Set());
-  const [count, setCount] = useState(10);
+  const [count, setCount] = useState(
+    initialCount !== undefined ? clampFlashcardCount(initialCount) : FLASHCARD_DEFAULT_COUNT
+  );
+  const autoStartedRef = useRef(false);
 
   const generate = async () => {
     setError(null);
@@ -50,6 +75,16 @@ export default function FlashcardsClient({ projectId }: { projectId: string }) {
       setLoading(false);
     }
   };
+
+  // Deep-link autostart from the Tutor setup dialog (?count=N&start=1) —
+  // fires once with the pre-selected deck size (StrictMode-safe via ref).
+  useEffect(() => {
+    if (autostart && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      generate();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const card = cards[idx] ?? null;
   const total = cards.length;

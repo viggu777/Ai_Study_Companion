@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge, Button, LinkButton, Spinner } from "@/components/ui";
 import { formatDateTime } from "@/lib/datetime";
 import { PracticeIcon, ArrowRightIcon } from "@/components/icons";
@@ -142,14 +142,32 @@ function StepDots({ total, current, answered }: { total: number; current: number
   );
 }
 
-export default function PracticeClient({ projectId }: { projectId: string }) {
+export default function PracticeClient({
+  projectId,
+  initialCount,
+  initialLevel,
+  autostart,
+}: {
+  projectId: string;
+  /** deep-link from Tutor: pre-select the question count */
+  initialCount?: number;
+  /** deep-link from Tutor: pre-select the paper level */
+  initialLevel?: PracticeLevel;
+  /** deep-link from Tutor: start the assignment automatically on load */
+  autostart?: boolean;
+}) {
   const [assignments, setAssignments] = useState<AssignmentListItem[]>([]);
   const [fetching, setFetching] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [practiceCount, setPracticeCount] = useState<number>(PRACTICE_DEFAULT_COUNT);
-  const [practiceLevel, setPracticeLevel] = useState<PracticeLevel>("MIXED");
+  const [practiceCount, setPracticeCount] = useState<number>(
+    initialCount !== undefined ? clampPracticeCount(initialCount) : PRACTICE_DEFAULT_COUNT
+  );
+  const [practiceLevel, setPracticeLevel] = useState<PracticeLevel>(
+    initialLevel !== undefined ? clampPracticeLevel(initialLevel) : "MIXED"
+  );
+  const autoStartedRef = useRef(false);
   const [active, setActive] = useState<ActiveAssignment | null>(null);
   const [activeLevel, setActiveLevel] = useState<PracticeLevel>("MIXED");
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -217,6 +235,16 @@ export default function PracticeClient({ projectId }: { projectId: string }) {
       setGenerating(false);
     }
   };
+
+  // Deep-link autostart from the Tutor setup dialog (?count=N&level=L&start=1) —
+  // fires once with the pre-selected options (StrictMode-safe via ref).
+  useEffect(() => {
+    if (autostart && !autoStartedRef.current) {
+      autoStartedRef.current = true;
+      startAssignment();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadAssignment = async (assignmentId: string) => {
     setError(null);
