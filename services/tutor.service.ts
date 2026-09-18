@@ -407,6 +407,8 @@ export interface ConversationSummary {
   exchangeCount: number;
   created_at: string;
   updated_at: string;
+  isPinned: boolean;
+  pinnedAt: string | null;
 }
 
 /** Auto-generated title from the first user message (truncated). */
@@ -422,22 +424,39 @@ function titleFromMessages(
 
 /**
  * List past conversations for the Chats panel — most recent first, with
- * auto-generated titles and exchange counts.
+ * auto-generated titles and exchange counts. Pinned conversations sort first.
  */
 export async function listConversations(projectId: string): Promise<ConversationSummary[]> {
   const userId = await getCurrentUserId();
   const db = await getDb();
   await requireProjectSpace(projectId, userId);
 
-  const { data: convos, error } = await db
-    .from("conversations")
-    .select("id, created_at, updated_at")
-    .eq("project_id", projectId)
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .limit(50);
-  if (error) throw new Error("Failed to list conversations");
-  const list = (convos ?? []) as Array<{ id: string; created_at: string; updated_at: string }>;
+  // Select pin columns when the 013 migration has run; fall back gracefully
+  // on DBs where it hasn't (treat everything as unpinned).
+  let convos: Array<{ id: string; created_at: string; updated_at: string; is_pinned?: boolean | null; pinned_at?: string | null }> | null = null;
+  try {
+    const { data, error } = await db
+      .from("conversations")
+      .select("id, created_at, updated_at, is_pinned, pinned_at")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .order("is_pinned", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    convos = (data ?? []) as Array<{ id: string; created_at: string; updated_at: string; is_pinned?: boolean | null; pinned_at?: string | null }>;
+  } catch {
+    const { data, error } = await db
+      .from("conversations")
+      .select("id, created_at, updated_at")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(50);
+    if (error) throw new Error("Failed to list conversations");
+    convos = (data ?? []) as Array<{ id: string; created_at: string; updated_at: string }>;
+  }
+  const list = convos ?? [];
   if (list.length === 0) return [];
 
   const ids = list.map((c) => c.id);
@@ -465,6 +484,8 @@ export async function listConversations(projectId: string): Promise<Conversation
       exchangeCount: Math.min(assistantCount, userCount) || assistantCount || userCount,
       created_at: c.created_at,
       updated_at: c.updated_at,
+      isPinned: (c as { is_pinned?: boolean | null }).is_pinned === true,
+      pinnedAt: (c as { pinned_at?: string | null }).pinned_at ?? null,
     };
   });
 }
@@ -481,6 +502,42 @@ export async function createConversation(projectId: string): Promise<{ id: strin
     .single();
   if (error || !created) throw new Error("Failed to create conversation");
   return { id: (created as { id: string }).id };
+}
+
+/** Delete a conversation and its messages (cascade). Scoped to project + user. */
+export async function deleteConversation(projectId: string, conversationId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+  await requireConversation(conversationId, projectId, userId);
+  const db = await getDb();
+  const { error } = await db
+    .from("conversations")
+    .delete()
+    .eq("id", conversationId)
+    .eq("project_id", projectId)
+    .eq("user_id", userId);
+  if (error) throw new Error("Failed to delete conversation");
+}
+
+/** Pin / unpin a conversation so it stays on top of the Chats panel. */
+export async function setConversationPinned(
+  projectId: string,
+  conversationId: string,
+  pinned: boolean
+): Promise<{ id: string; isPinned: boolean }> {
+  const userId = await getCurrentUserId();
+  await requireConversation(conversationId, projectId, userId);
+  const db = await getDb();
+  const patch = pinned
+    ? { is_pinned: true, pinned_at: new Date().toISOString() }
+    : { is_pinned: false, pinned_at: null };
+  const { error } = await db
+    .from("conversations")
+    .update(patch)
+    .eq("id", conversationId)
+    .eq("project_id", projectId)
+    .eq("user_id", userId);
+  if (error) throw new Error("Failed to update conversation");
+  return { id: conversationId, isPinned: pinned };
 }
 
 /**
