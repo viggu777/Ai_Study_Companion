@@ -1,0 +1,48 @@
+/* Shared print stylesheet for AI Study Companion submission docs */
+@page {
+  size: A4;
+  margin: 18mm 15mm 20mm 15mm;
+  @bottom-center {
+    content: "AI Study Companion  •  " string(doclabel) "  •  p. " counter(page) " / " counter(pages);
+    font-size: 7.5pt; color: #64748b; font-family: Helvetica, Arial, sans-serif;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: Helvetica, Arial, sans-serif; font-size: 9.4pt; line-height: 1.55; color: #1e293b; margin: 0; }
+.cover { page: cover; background: linear-gradient(135deg, #1e1b4b 0%, #4338ca 45%, #0ea5e9 100%); color: #fff; border-radius: 10px; padding: 44px 40px; margin-bottom: 18px; }
+.cover .kicker { font-size: 8.5pt; letter-spacing: 2.5px; text-transform: uppercase; color: #c7d2fe; margin-bottom: 10px; }
+.cover h1 { font-size: 30pt; line-height: 1.1; margin: 0 0 8px 0; font-weight: 800; }
+.cover .sub { font-size: 12.5pt; color: #e0e7ff; margin: 0 0 20px 0; }
+.cover .meta { width: 100%; border-collapse: collapse; font-size: 8.6pt; }
+.cover .meta td { padding: 5px 8px; border-top: 1px solid rgba(255,255,255,.25); color: #eef2ff; }
+.cover .meta td:first-child { color: #c7d2fe; width: 170px; }
+h2 { font-size: 14pt; color: #1e1b4b; border-bottom: 2.5px solid #4338ca; padding-bottom: 4px; margin: 22px 0 10px 0; string-set: doclabel "ARCH"; }
+h3 { font-size: 11pt; color: #3730a3; margin: 14px 0 6px 0; }
+h4 { font-size: 9.8pt; color: #0f172a; margin: 10px 0 4px 0; }
+p, li { orphans: 3; widows: 3; }
+table.grid { width: 100%; border-collapse: collapse; font-size: 8.7pt; margin: 8px 0 12px 0; }
+table.grid th { background: #1e1b4b; color: #fff; text-align: left; padding: 6px 8px; }
+table.grid td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+table.grid tr:nth-child(even) td { background: #f1f5f9; }
+code, .mono { font-family: "Courier New", Courier, monospace; font-size: 8.3pt; }
+pre { background: #0f172a; color: #e2e8f0; padding: 10px 12px; border-radius: 7px; font-size: 7.9pt; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+pre .c { color: #94a3b8; }
+.callout { border-left: 4px solid #4338ca; background: #eef2ff; padding: 8px 12px; border-radius: 0 7px 7px 0; margin: 10px 0; font-size: 9pt; }
+.callout.warn { border-color: #f59e0b; background: #fefce8; }
+.callout.ok { border-color: #10b981; background: #ecfdf5; }
+.flow { background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 14px; margin: 8px 0 12px 0; font-size: 8.8pt; }
+.flow .step { background: #fff; border: 1px solid #c7d2fe; border-radius: 6px; padding: 5px 10px; margin: 3px 0; }
+.flow .arrow { text-align: center; color: #4338ca; font-weight: bold; line-height: 1.1; }
+.arch { display: block; }
+.kv { display: table; width: 100%; font-size: 8.8pt; }
+.badge { display: inline-block; background: #4338ca; color: #fff; border-radius: 20px; padding: 1px 9px; font-size: 7.8pt; font-weight: bold; }
+.badge.green { background: #059669; } .badge.amber { background: #d97706; } .badge.slate { background: #475569; }
+.promptbox { background: #f8fafc; border: 1px solid #cbd5e1; border-left: 4px solid #0ea5e9; border-radius: 0 7px 7px 0; padding: 9px 12px; margin: 8px 0; font-size: 8.9pt; }
+.promptbox .who { font-size: 7.8pt; font-weight: bold; letter-spacing: 1px; text-transform: uppercase; color: #0284c7; }
+ul.tight li, ol.tight li { margin-bottom: 2px; }
+.toc { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 18px; }
+.toc ol { margin: 4px 0; padding-left: 20px; }
+.small { font-size: 8.2pt; color: #475569; }
+.pagebreak { page-break-before: always; }
+h2, h3 { page-break-after: avoid; }
+pre, table.grid, .callout, .flow, .promptbox { page-break-inside: avoid; }

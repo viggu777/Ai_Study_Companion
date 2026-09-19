@@ -11,6 +11,65 @@ the closed learning loop.
 **Live deployment:** https://ai-study-companion-three-inky.vercel.app/
 (Vercel + Supabase + Inngest Cloud — see Deployment information below).
 
+## Demo accounts (video-ready)
+
+Database was reset to a clean state on 2026-09-18 (all learning rows deleted,
+`materials` Storage bucket emptied; schema, RLS, indexes, `match_chunks`, and
+14 migrations preserved; `auth.users` kept). Two fresh accounts were created
+for the demo video — log in with these on localhost or the live URL:
+
+| Role  | Email                      | Password   | Notes                                              |
+| ----- | -------------------------- | ---------- | -------------------------------------------------- |
+| Learner (user) | `demo.learner@aistudy.app` | `Demo1234!` | Empty workspace — use for the full learning loop |
+| Admin | `demo.admin@aistudy.app`   | `Admin1234!` | In `ADMIN_EMAILS` — can open `/admin/*`         |
+
+> Deploy note: Vercel's `ADMIN_EMAILS` must include `demo.admin@aistudy.app`
+> (currently `kmvk777@gmail.com` only locally) or the admin login on the live
+> URL will be denied at `/admin/*`. Both accounts are email-confirmed, so no
+> verification step blocks recording.
+
+## Demo video flow (PRD §20 order)
+
+Record with the learner account, then the admin account:
+
+1. Create Space → 2. Create Project → 3. Upload Material (PDF) →
+4. Wait for status QUEUED → PROCESSING → READY → 5. Ask Tutor (grounded
+question) → 6. Show citation (`Source: <file> — Page N`) → 7. Ask an
+unsupported question (shows insufficient-evidence response) →
+8. Start Adaptive Quiz (MCQ) → 9. Answer an open-ended question (AI-graded
+feedback) → 10. Open Mastery / Growth → 11. Open Analytics (project + global)
+→ 12. Open Recommendations → 13. Log in as `demo.admin@aistudy.app` and walk
+through Admin Dashboard (users, spaces, projects, activity, engagement,
+learning, AI usage, AI evaluation, jobs, health).
+
+## Must-Have coverage (PRD §18 — all present)
+
+| Requirement | Where in this repo |
+| ----------- | ------------------ |
+| Authentication | `app/(auth)/{login,signup}`, `middleware.ts`, `tests/unit/rate-limit-auth.test.ts` |
+| Spaces and Projects | `app/api/spaces/*`, `app/api/projects/[projectId]/route.ts`, `services/project.service.ts` |
+| PDF materials | `services/material.service.ts`, `app/(app)/projects/[projectId]/materials/page.tsx` |
+| Background document processing | `lib/jobs/`, `app/api/inngest/route.ts`, `tests/unit/job-guards.test.ts` |
+| AI Tutor | `services/tutor.service.ts`, `app/(app)/projects/[projectId]/tutor/page.tsx` |
+| Grounded answers with citations | `services/tutor.service.ts`, `tests/unit/tutor-citations.test.ts` |
+| Unsupported-question handling | `tests/integration/tutor-insufficient.test.ts` (+ eval fixtures) |
+| Adaptive Quiz | `services/quiz.service.ts`, `app/(app)/projects/[projectId]/quiz/page.tsx`, `tests/unit/quiz-gating.test.ts` |
+| Open-ended assessment | `ai/assessment.ts`, `services/quiz.service.ts` (AI-graded with feedback) |
+| Concept mastery | `services/mastery.service.ts`, `.../mastery/page.tsx`, `tests/unit/mastery*.test.ts` |
+| Growth Analysis | `services/growth.service.ts`, `.../growth/page.tsx`, `tests/unit/growth-trends.test.ts` |
+| Recommendations | `services/recommendation.service.ts`, `.../recommendations/page.tsx` |
+| Project and global analytics | `services/analytics.service.ts`, `.../analytics/page.tsx`, `app/api/analytics/global/route.ts` |
+| Activity tracking | `learning_events` table, `app/(app)/admin/activity/page.tsx` |
+| Admin Dashboard | `app/(app)/admin/*` (dashboard, users, spaces, projects, activity, engagement, learning, ai-usage, ai-evaluation, jobs, health) |
+| Persistent relevant learning context | Conversation summaries (`ai/tutor.ts`, `005_conversation_summary.sql`, `tests/unit/tutor-summary.test.ts`) |
+| Project-level data isolation | Ownership `WHERE id=$1 AND user_id=$2` + RLS, `tests/unit/ownership.test.ts` |
+| Structured AI interaction | `ai/*.ts` prompt+schema modules, `tests/unit/validation-schemas.test.ts` |
+| Basic AI observability and evaluation | `ai_operations` log, `admin/ai-usage`, `admin/ai-evaluation`, `npm run eval` (18 fixtures) |
+| Error handling | Retries/fallbacks, idempotency guards, `app/error.tsx`, `app/not-found.tsx` |
+| Testing | `npm test` — 314 tests across 26 files |
+| Deployment | Live at https://ai-study-companion-three-inky.vercel.app/ |
+| Architecture documentation | `docs/architecture.md` + `submission-docs/` (PDF/HTML/MD) |
+
 ## Setup
 
 1. Install dependencies:
@@ -67,7 +126,7 @@ the closed learning loop.
 ## How to run tests
 
 ```bash
-npm test        # vitest — 290 unit/integration tests across 23 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile, gemini-embedding-2 formatting + mocked error paths, migration ordering)
+npm test        # vitest — 314 unit/integration tests across 26 files (mastery formula, ownership, tutor insufficient-evidence path, tutor conversation-summary continuity, quiz answer-gating, rate-limit windows, 401/404 mapping, admin system-health, evaluation run-tracking, profile, gemini-embedding-2 formatting + mocked error paths, migration ordering)
 npm run eval    # tsx tests/eval/run-eval.ts — 18 evaluation fixtures, writes tests/eval/results.json + evaluation-results.json + per-run history in tests/eval/history/
 npm run build   # production Next.js build (must compile clean)
 npm run lint    # ESLint (must report no warnings)
@@ -121,14 +180,18 @@ returns 768 floats). `match_chunks(query_embedding vector(768), ...)` and the
 `EMBEDDING_DIM` / `GEMINI_EMBEDDING_DIM` guards enforce it — never mix models
 or dimensions in `chunks.embedding`.
 
-Clean dataset (2026-09-18): all old testing/failed learning and indexing data
-(spaces, projects, materials, chunks, concepts, mastery, conversations,
-messages, quizzes, questions, answers, recommendations, learning events,
-`ai_operations`, practice tables, storage objects) was intentionally deleted via
-a transactional reset — schema, RLS policies, indexes, and `match_chunks` were
-preserved, `auth.users` (including the admin account) was kept. No old vectors
-were migrated or re-embedded; the application starts from a clean dataset ready
-for fresh materials.
+Clean dataset (2026-09-18, video-ready): all learning and indexing data
+(spaces, projects, materials, chunks, concepts, concept_mastery,
+mastery_history, conversations, messages, quizzes, questions, answers,
+recommendations, learning events, `ai_operations`, practice tables,
+misconceptions, concept_edges) was deleted via a transactional reset and all
+objects in the `materials` Storage bucket were removed — verified 0 rows in
+every learning table. Schema, RLS policies, indexes, `match_chunks`, all 14
+migrations, and `auth.users` were preserved. Fresh demo accounts
+`demo.learner@aistudy.app` / `demo.admin@aistudy.app` (see Demo accounts
+above) were created for recording. No old vectors were migrated or
+re-embedded; the application starts from a clean dataset ready for fresh
+materials.
 
 New indexing flow: PDF → extract text → chunk (~2400 chars / 320 overlap) →
 Gemini Embedding 2 (batched, 20 per request) → store vector → concept

@@ -263,27 +263,48 @@ export async function uploadMaterial(
     metadata: { filename: file.name, storage_path: storagePath },
   });
 
-  // Trigger background job. On Vercel serverless a setTimeout fallback never
-  // runs after the response is sent (function frozen), which used to leave
-  // materials stuck in QUEUED forever when Inngest delivery failed (missing /
-  // mismatched INNGEST_* keys, app not synced) → 0 chunks → tutor
-  // "insufficient evidence" + empty concepts. So on send failure, process
-  // inline within this request (route sets maxDuration=60). The claim guard
-  // in processMaterial keeps this safe if Inngest later delivers anyway.
+  // Trigger background job + ALWAYS process inline within this request
+  // (route sets maxDuration=60). Inngest send succeeding does NOT guarantee a
+  // worker runs: when the app isn't synced to Inngest Cloud / the dev server
+  // isn't running / keys mismatch, the event is accepted but nothing ever
+  // processes it — this used to leave materials stuck in QUEUED forever until
+  // the user clicked Retry (which always processes inline, so it healed).
+  // The atomic claim guard in processMaterial (QUEUED/FAILED → PROCESSING)
+  // makes this safe: whichever worker (Inngest or inline) claims first wins,
+  // the loser returns without duplicating chunks.
   try {
     await inngest.send({
       name: "material/uploaded",
       data: { materialId: material.id, projectId, userId, spaceId: project.space_id },
     });
   } catch (e) {
-    console.error("Inngest send failed, processing inline within request:", e);
+    console.error("Inngest send failed, will still process inline within request:", e);
+  }
+  try {
     await processMaterial(material.id);
+  } catch (e) {
+    // processMaterial marks pipeline failures as FAILED internally; only
+    // unexpected errors throw here. Don't fail the upload — the row stays
+    // QUEUED and a late Inngest delivery or manual Retry can still heal it.
+    console.error("Inline material processing failed (row left for worker/retry):", e);
   }
 
-  // Also attempt direct fallback after short delay even if Inngest succeeded, but only if Inngest dev server not present
-  // For prototype we ensure processing happens even without Inngest dashboard: the Inngest function will also run via /api/inngest
-  // No-op: Inngest will handle when available
-
+  // Return the fresh status so the UI can jump straight to READY/FAILED
+  // instead of flashing a stale QUEUED. Falls back to QUEUED if unreadable.
+  try {
+    const { data: fresh } = await db
+      .from("materials")
+      .select("status")
+      .eq("id", material.id)
+      .eq("user_id", userId)
+      .single();
+    const s = (fresh as { status?: string } | null)?.status;
+    if (s === "READY" || s === "FAILED" || s === "PROCESSING" || s === "QUEUED") {
+      return { id: material.id, status: s };
+    }
+  } catch {
+    // ignore — fall through to QUEUED
+  }
   return { id: material.id, status: "QUEUED" };
 }
 
@@ -357,6 +378,21 @@ export async function retryMaterial(materialId: string) {
   // succeeds yet nothing ever processes. The claim guard in processMaterial
   // makes a late Inngest delivery a safe no-op.
   await processMaterial(materialId);
+  // Return the fresh status so the caller doesn't flash a stale QUEUED.
+  try {
+    const { data: fresh } = await db
+      .from("materials")
+      .select("status")
+      .eq("id", materialId)
+      .eq("user_id", userId)
+      .single();
+    const s = (fresh as { status?: string } | null)?.status;
+    if (s === "READY" || s === "FAILED" || s === "PROCESSING" || s === "QUEUED") {
+      return { id: materialId, status: s as "READY" | "FAILED" | "PROCESSING" | "QUEUED" };
+    }
+  } catch {
+    // ignore — fall through to QUEUED
+  }
   return { id: materialId, status: "QUEUED" as const };
 }
 

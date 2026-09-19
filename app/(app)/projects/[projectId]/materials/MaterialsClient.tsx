@@ -120,13 +120,24 @@ export default function MaterialsClient({
         setUploading(false);
         return;
       }
+      // Backend processes inline within the upload request, so data.status
+      // is already the fresh status (READY/FAILED) when processing finished
+      // in-request, or QUEUED/PROCESSING when the Inngest worker claimed it.
+      // Use it for the optimistic row so the UI doesn't flash a stale QUEUED.
+      const freshStatus =
+        data.status === "READY" ||
+        data.status === "FAILED" ||
+        data.status === "PROCESSING" ||
+        data.status === "QUEUED"
+          ? data.status
+          : "QUEUED";
       // Optimistic: add queued item
       setMaterials((prev) => [
         {
           id: data.id,
           project_id: projectId,
           filename: file.name,
-          status: "QUEUED",
+          status: freshStatus,
           page_count: null,
           processing_error: null,
           created_at: new Date().toISOString(),
@@ -134,6 +145,9 @@ export default function MaterialsClient({
         ...prev,
       ]);
       form.reset();
+      // Refresh to pick up page_count / processing_error and to catch the
+      // PROCESSING → READY transition when the background worker owns the job.
+      refresh();
       setTimeout(refresh, 800);
     } catch {
       setError("Upload failed");
@@ -152,7 +166,17 @@ export default function MaterialsClient({
         setError(data.error || "Retry failed");
         return;
       }
-      setMaterials((prev) => prev.map((m) => (m.id === materialId ? { ...m, status: "QUEUED", processing_error: null } : m)));
+      const freshStatus =
+        data.status === "READY" ||
+        data.status === "FAILED" ||
+        data.status === "PROCESSING" ||
+        data.status === "QUEUED"
+          ? data.status
+          : "QUEUED";
+      setMaterials((prev) => prev.map((m) => (m.id === materialId ? { ...m, status: freshStatus, processing_error: null } : m)));
+      // Inline retry usually finishes in-request (READY/FAILED already), but
+      // refresh anyway for page_count / error text and worker-owned races.
+      refresh();
       setTimeout(refresh, 800);
     } finally {
       setRetryingId(null);

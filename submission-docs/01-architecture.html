@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="style.css">
+<style>h2 { string-set: doclabel "Architecture Documentation"; }</style></head>
+<body>
+
+<div class="cover">
+  <div class="kicker">Full Stack AI Engineer Intern — Project Submission</div>
+  <h1>AI Study Companion</h1>
+  <p class="sub">Architecture Documentation — how the system is built, and why it is built that way</p>
+  <table class="meta">
+    <tr><td>Product</td><td>AI-Powered Learning &amp; Growth Workspace (PRD v3.0, Candidate Challenge Edition)</td></tr>
+    <tr><td>Live deployment</td><td>https://ai-study-companion-three-inky.vercel.app/</td></tr>
+    <tr><td>Stack</td><td>Next.js 14 + TypeScript · Supabase (Postgres + pgvector + Auth + Storage) · Inngest · Mercury mercury-2.5 · Gemini gemini-embedding-2 (768-d)</td></tr>
+    <tr><td>Version / Date</td><td>v1.0 — 18 September 2026 · Prototype scope (3–4 days)</td></tr>
+    <tr><td>Test status</td><td>314 tests across 26 files passing · 18 eval fixtures · production build clean</td></tr>
+  </table>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+<li>Product overview &amp; the closed learning loop</li>
+<li>Technology choices &amp; justification</li>
+<li>High-level architecture</li>
+<li>Frontend architecture</li>
+<li>API &amp; service layer</li>
+<li>Database &amp; data isolation</li>
+<li>RAG &amp; grounded Tutor (citations, unsupported handling, injection defense)</li>
+<li>Adaptive quiz, assessment, mastery, growth &amp; recommendations</li>
+<li>Persistent learning context</li>
+<li>Events &amp; intelligent background workflows</li>
+<li>AI engineering, observability &amp; evaluation</li>
+<li>Reliability, security &amp; performance</li>
+<li>Deployment &amp; configuration</li>
+<li>Testing summary · Trade-offs &amp; limitations · Future work</li>
+</ol>
+</div>
+
+<h2>1. Product overview &amp; the closed learning loop</h2>
+<p><strong>AI Study Companion</strong> is a persistent, contextual, measurable learning workspace — deliberately <em>not</em> a PDF chatbot. A learner organises study into <strong>Spaces</strong> (broad areas) → <strong>Projects</strong> (focused goals), uploads <strong>Materials</strong> (PDFs + images), learns with a <strong>grounded AI Tutor</strong>, is tested by an <strong>adaptive Quiz</strong> (MCQ + open-ended), and watches <strong>Concept Mastery</strong> evolve into <strong>Growth Analysis</strong> and actionable <strong>Recommendations</strong>. An <strong>Admin Dashboard</strong> gives platform-level visibility into users, learning, AI usage, evaluation and system health.</p>
+<p>The defining architectural idea is a <strong>closed evidence loop</strong>: every AI feature either <em>produces</em> learning evidence or <em>acts on</em> it. Nothing stands alone.</p>
+<div class="flow">
+<div class="step"><strong>Create Space → Create Project → Upload Material → Process &amp; Index → Learn with Tutor (grounded + cited) → Adaptive Quiz → Evaluate → Update Mastery → Analyse Growth → Recommend Next Action → Continue Learning</strong></div>
+<div class="arrow">↺ &nbsp;each step emits events; each event can trigger the next workflow</div>
+</div>
+<div class="callout ok"><strong>Design principles:</strong> Context-first (never leak across Projects) · Evidence over guessing (say “insufficient evidence” rather than hallucinate) · Persistent-but-relevant context (bounded, not full history) · Asynchronous by design · Observable AI · Controlled AI↔app interaction (validated tools, never raw DB access).</div>
+
+<h2>2. Technology choices &amp; justification</h2>
+<table class="grid">
+<tr><th style="width:22%">Layer</th><th style="width:34%">Choice (actual, shipped)</th><th>Why — engineering judgement</th></tr>
+<tr><td>App framework</td><td>Next.js 14 App Router + TypeScript</td><td>Full-stack in one repo, strongest stack for speed; thin route handlers + server components; one-command Vercel deploy.</td></tr>
+<tr><td>UI</td><td>React + Tailwind (stone/sky theme, shared Sidebar)</td><td>No custom design system; consistent project rail = the learning loop made visible.</td></tr>
+<tr><td>Database</td><td>Supabase Postgres (single source of truth)</td><td>Relational domain (User→Space→Project→…) fits Postgres; one project for DB + Auth + Storage.</td></tr>
+<tr><td>Vector search</td><td>pgvector in the same Postgres, <span class="mono">chunks.embedding VECTOR(768)</span></td><td>No second vector DB to operate; relational + vector predicates in one query; <span class="mono">match_chunks</span> RPC scoped by <span class="mono">project_id</span>.</td></tr>
+<tr><td>Auth</td><td>Supabase Auth (JWT, sessions, RLS)</td><td>No custom auth; middleware guards app routes; service-layer ownership checks + RLS defence-in-depth.</td></tr>
+<tr><td>File storage</td><td>Supabase Storage, private <span class="mono">materials</span> bucket</td><td>Same project as DB/Auth; paths scoped <span class="mono">user/project/file</span>, sanitised filenames.</td></tr>
+<tr><td>Background jobs</td><td>Inngest (Cloud) + inline fallback</td><td>Event-driven with retries, zero infra; <span class="mono">maxDuration=60</span> + direct-processing fallback so Vercel serverless never leaves materials stuck in QUEUED.</td></tr>
+<tr><td>Chat / structured / eval</td><td>Mercury (Inception Labs), model <span class="mono">mercury-2.5</span> via <span class="mono">lib/ai/AIService.ts</span></td><td>OpenAI-compatible + JSON mode; reasoning-model shaping (token headroom, temp clamp, <span class="mono">reasoning_effort=low</span> for structured tasks); server-side schema validation on every output.</td></tr>
+<tr><td>Embeddings</td><td>Google Gemini <span class="mono">gemini-embedding-2</span>, 768 dims</td><td>Free-tier eligible; Matryoshka-native 768 preserves existing <span class="mono">VECTOR(768)</span> column (migration 012); same model+config for documents and queries; key server-only, never client.</td></tr>
+<tr><td>Deployment</td><td>Vercel (app) + Supabase (data) + Inngest (jobs)</td><td>Zero-ops for a solo 3–4 day prototype; env-separated, secrets never committed.</td></tr>
+</table>
+<div class="callout"><strong>Deliberately not built:</strong> microservices, Kubernetes, a dedicated vector DB, custom auth/queues, multi-provider routing, distributed tracing. Each would cost a day with zero observable payoff at prototype scale. See §14.</div>
+
+<h2>3. High-level architecture</h2>
+<div class="flow">
+<div class="step">👤 <strong>User</strong> → HTTPS (Vercel) → <strong>Next.js 14 App</strong> (UI + thin Route Handlers)</div>
+<div class="arrow">↓ synchronous &nbsp;&nbsp;·&nbsp;&nbsp; ↓ emits events</div>
+<div class="step">🧩 <strong>Service Layer</strong> <span class="small">(ownership + business logic — services/*.ts)</span> &nbsp;&nbsp;⇄&nbsp;&nbsp; ⚙️ <strong>Inngest jobs</strong> <span class="small">(material / mastery / recommendation / practice — lib/jobs, /api/inngest)</span></div>
+<div class="arrow">↓</div>
+<div class="step">🤖 <strong>AIService</strong> <span class="small">(Mercury chat/structured/eval + Gemini embeddings — lib/ai/AIService.ts)</span> &nbsp;&nbsp;⇄&nbsp;&nbsp; 🗄️ <strong>Supabase Postgres + pgvector + RLS</strong> → 📦 <strong>Storage (PDFs)</strong></div>
+<div class="arrow">↓ cross-cutting: <strong>Observability</strong> (ai_operations) · <strong>Events</strong> (learning_events) · <strong>Evaluation</strong> (18 fixtures + run history)</div>
+</div>
+<p><strong>Golden rule:</strong> every request — sync or background — passes <em>Authentication → Authorization → Ownership validation → Business logic → Database (RLS as second layer)</em> before any data is touched.</p>
+
+<h2>4. Frontend architecture</h2>
+<p>App Router, server components by default; client components only where interactivity demands (Tutor chat, quiz taking, forms). One shared <span class="mono">components/Sidebar.tsx</span> shell (workspace / project / admin, mobile drawer).</p>
+<pre>app/  /  /login  /signup  /dashboard (Home: Continue · Recent · Progress · Attention · Next Action)
+  /spaces  /spaces/[spaceId]  /profile
+  /projects/[projectId]  (hub) + materials · tutor · quiz · practice · flashcards
+                         · concepts · mastery · growth · analytics · recommendations
+  /admin/  dashboard · users · users/[userId] · spaces · projects · activity
+           engagement · learning · ai-usage · ai-evaluation · jobs · health</pre>
+<p>Inside a Project the rail <strong>Materials · Tutor · Quiz · Mastery · Growth · Analytics · Recommendations</strong> (plus Practice, Flashcards, Concepts) is always visible — the loop made navigable. Every async view implements <span class="badge">Loading</span> <span class="badge">Processing</span> <span class="badge green">Ready</span> <span class="badge amber">Failed+Retry</span> <span class="badge slate">Empty</span>.</p>
+
+<h2 class="pagebreak">5. API &amp; service layer</h2>
+<p>Route handlers stay <strong>thin</strong>: they resolve the session, call a service, map errors (401/404/429). All logic lives in <span class="mono">services/</span>; all AI lives in <span class="mono">ai/</span> behind <span class="mono">AIService</span>. A handler never touches the DB directly.</p>
+<table class="grid">
+<tr><th>Area</th><th>Key files</th><th>Responsibility</th></tr>
+<tr><td>Learning CRUD</td><td class="mono">project, material, chunk, concept, flashcard services</td><td>Spaces/Projects, upload, chunks, concepts, decks — all ownership-scoped.</td></tr>
+<tr><td>AI orchestration</td><td class="mono">tutor, quiz, recommendation, practice, misconception, knowledge-graph services</td><td>RAG orchestration, adaptive selection, grading, recommendations.</td></tr>
+<tr><td>Learning science</td><td class="mono">mastery.service.ts, growth.service.ts</td><td>Deterministic 0.7/0.3 updates; ±5 trend classification.</td></tr>
+<tr><td>Insight</td><td class="mono">analytics, dashboard, admin, evaluation services</td><td>Project/global aggregations; Home “what next”; admin drill-downs; run-over-run eval comparison.</td></tr>
+<tr><td>Prompts &amp; schemas</td><td class="mono">ai/tutor, quiz, assessment, concepts, recommendation, flashcards, practice.ts</td><td>System prompts + JSON schemas + server-side validators per feature.</td></tr>
+<tr><td>Cross-cutting</td><td class="mono">lib/auth, lib/db, lib/rag, lib/storage, lib/jobs, lib/security</td><td>Sessions, typed queries, retrieval, uploads, Inngest registration, rate limits.</td></tr>
+</table>
+
+<h2>6. Database &amp; data isolation</h2>
+<p>One Postgres holds relational + vector data. Simplified schema (uuid PKs, timestamptz, CASCADE to parents):</p>
+<pre>spaces (id, user_id, name, description)
+projects (id, space_id, user_id, name, description, learning_goal)
+materials (id, project_id, user_id, filename, storage_path, file_hash, file_size,
+           status QUEUED|PROCESSING|READY|FAILED, page_count, processing_error)
+chunks (id, material_id, project_id, content, page_number, chunk_index,
+        embedding VECTOR(768), metadata JSONB)
+concepts (id, project_id, name, description, source_material_id)
+concept_mastery (id, project_id, concept_id, user_id, mastery_score, evidence JSONB)
+mastery_history (id, concept_id, user_id, previous_score, new_score, reason)  -- growth input
+conversations (id, project_id, user_id, summary, summary_updated_at, pinned) / messages (…, citations JSONB)
+quizzes / questions (MCQ|OPEN_ENDED, difficulty, options, correct_answer, explanation)
+answers (response, is_correct, score, evaluation JSONB)
+practice_assignments / practice_items / misconceptions (repeated-mistake tracking)
+recommendations (title, action_items JSONB, ACTIVE|COMPLETED|DISMISSED)
+learning_events (user/space/project, event_type, entity, metadata)  -- activity + analytics + admin
+ai_operations (feature, model, request_id, latency_ms, success, tokens, cost, error)</pre>
+<p><strong>Isolation (defence in depth):</strong> service functions scope every lookup — <span class="mono">WHERE id=$1 AND user_id=$2</span>, never bare id; misses return <strong>404</strong> (no existence leak); RLS <span class="mono">user_id = auth.uid()</span> on all user tables as an independent second layer; background jobs carry <span class="mono">user_id/project_id</span> in the event payload; retrieval filters <span class="mono">WHERE project_id</span> always. Migrations <span class="mono">001→014</span> apply in order (<span class="mono">npm run migrate</span> or SQL editor); indexes on all FKs, <span class="mono">learning_events(project_id, created_at)</span>, and hnsw/ivfflat on <span class="mono">chunks.embedding</span>.</p>
+
+<h2>7. RAG &amp; grounded Tutor</h2>
+<h3>7.1 Indexing pipeline (async)</h3>
+<div class="flow">
+<div class="step">Upload (PDF/png/jpg/webp, 10 MB, non-empty, SHA-256 dedupe per project) → Storage → <span class="mono">materials</span> QUEUED → Inngest job (inline fallback)</div>
+<div class="arrow">↓</div>
+<div class="step">Claim (atomic QUEUED/FAILED→PROCESSING) → extract text w/ page numbers (pdf-parse; OCR for scans) → reject &lt;20 chars → chunk (~2400 chars / 320 overlap) → Gemini embed (batches of 20, dim-gated) → insert (batches of 50, stale deleted) → concepts (≤8, non-fatal) → READY / FAILED+error</div>
+</div>
+<h3>7.2 Tutor query path</h3>
+<div class="flow">
+<div class="step">Authenticate → validate project ownership → dedupe (30 s) → persist user turn → embed query (Gemini, 10-min cache) → <span class="mono">match_chunks</span> scoped by <span class="mono">project_id</span> (over-fetch ≤100, JS-cosine fallback) → filter <span class="mono">RELEVANCE_THRESHOLD=0.25</span>, balance across materials, top-K 5</div>
+<div class="arrow">↓</div>
+<div class="step"><strong>Insufficient evidence?</strong> → skip LLM, persist fixed “couldn't find enough evidence…” response &nbsp;·&nbsp; <strong>Else</strong> → compose (chunks + 6-msg window + rolling summary + learning/assessment context) → <span class="mono">generateStructured</span> (Mercury, low temp) → validate schema + filter citations to real chunk IDs → persist + log</div>
+</div>
+<div class="callout ok"><strong>Citations:</strong> every grounded answer returns <span class="mono">{answer, confidence, grounded, citations[{materialId, materialName, page, chunkId}], followUp}</span>; UI shows “Source: Name — Page N” with excerpts via ownership-checked <span class="mono">/api/chunks/[id]</span>.</div>
+<div class="callout warn"><strong>Prompt-injection defense:</strong> retrieved text is <em>data</em> inside a delimited <span class="mono">&lt;retrieved_evidence&gt;</span> block marked untrusted; system prompts forbid following instructions inside it. Verified by fixture TUTOR-05 (malicious PDF).</div>
+
+<h2>8. Adaptive quiz, assessment, mastery, growth &amp; recommendations</h2>
+<table class="grid">
+<tr><th>Capability</th><th>How it works (shipped)</th></tr>
+<tr><td>Adaptive selection</td><td>Weighted score per concept: low mastery + recent mistakes + decline/improve deltas + recency/frequency (anti-repeat); difficulty + MCQ-vs-open-ended picked by thresholds — never naive wrong→easy.</td></tr>
+<tr><td>Generation</td><td>Mercury structured output <span class="mono">{concept_id, type, difficulty, question, options[4], correct_answer, explanation}</span>; server validation (exactly 4 options, correct ∈ options); retry once at lower temp; 2-min duplicate-quiz guard; answer gating (correct/explanation hidden until graded).</td></tr>
+<tr><td>Grading</td><td>MCQ deterministic string compare (no LLM). Open-ended: LLM → <span class="mono">{score 0–100, understanding, strengths, missingConcepts, reasoningQuality, feedback}</span>; <span class="mono">score ≥ 60 ⇒ correct</span>; failure raises, never writes a guess; per-question idempotency (re-POST returns existing).</td></tr>
+<tr><td>Mastery (deterministic)</td><td><span class="mono">new = prev × 0.7 + evidence × 0.3</span> (MCQ 0/100, open-ended as-is, averaged per concept), clamped/rounded; upsert + <span class="mono">mastery_history</span> row + <span class="mono">MASTERY_UPDATED</span>. The LLM never sets a score.</td></tr>
+<tr><td>Growth</td><td>Last two history points per concept: &gt;+5 IMPROVING, &lt;−5 REQUIRES_ATTENTION, else STABLE.</td></tr>
+<tr><td>Recommendations</td><td>After mastery updates: weak concepts (score&lt;60 or REQUIRES_ATTENTION) + mistakes + goal + activity → Mercury → <span class="mono">{title, action_items[2–5]}</span> naming real concepts/materials; skipped when nothing is weak; COMPLETED/DISMISSED lifecycle.</td></tr>
+</table>
+<p class="small">Differentiators on top of the baseline: Flashcards (weak-concept decks), Deep Practice (sections + MCQ), Misconception tracking (repeated-mistake workflow), Knowledge Graph, Sub-concept expansion, conversation pinning.</p>
+
+<h2 class="pagebreak">9. Persistent learning context</h2>
+<p>Only <em>useful</em> context is stored or sent — never full transcripts:</p>
+<div class="flow">
+<div class="step">Request → Project Knowledge (RAG chunks = evidence) + Conversation (last 6 msgs, always) + Rolling Summary (older turns, ≤1200 chars, refreshed ~every 6 msgs past 8) + Learning Context (goal, weak concepts, repeated mistakes) + Assessment Context (recent quiz/answers) → Compose → LLM</div>
+</div>
+<p>Summary is <em>context-only</em> (never evidence, never instructions) and refresh is best-effort — it never blocks the answer. This is what separates a companion from a chatbot.</p>
+
+<h2>10. Events &amp; intelligent background workflows</h2>
+<p>One <span class="mono">learning_events</span> table powers the activity feed, analytics, recommendations and admin. Catalog includes <span class="mono">SPACE/CREATED, PROJECT_CREATED, MATERIAL_UPLOADED/PROCESSING_STARTED/READY/FAILED, TUTOR_MESSAGE_SENT/RESPONSE_GENERATED, QUIZ_STARTED, QUESTION_ANSWERED, QUIZ_COMPLETED, MASTERY_UPDATED, RECOMMENDATION_GENERATED/COMPLETED</span> (+ practice/misconception events).</p>
+<div class="flow">
+<div class="step"><strong>Material:</strong> Upload → Process → Chunk → Embed → Concepts → READY</div>
+<div class="step"><strong>Learning:</strong> Quiz Completed → Evaluate → Update Mastery → Detect Weakness → Insight → Recommend</div>
+<div class="step"><strong>Repeated-mistake:</strong> Pattern (misconception bump/merge) → Update Context → Targeted Recommendation</div>
+</div>
+<p><strong>Idempotency &amp; recovery:</strong> atomic material claim; file-hash dedupe (duplicate → reuse, no second job); 2-min quiz-generation guard; per-question answer idempotency incl. concurrent-race handling; unique constraint where duplication harms; FAILED materials retry inline (heals even if Inngest delivery failed); user never needs the browser open.</p>
+
+<h2>11. AI engineering, observability &amp; evaluation</h2>
+<p>AI is treated as an engineered system: one <span class="mono">AIService</span> abstraction (chat / structured / embeddings / evaluation / doc-understanding), JSON-mode + per-feature validators, 90 s timeouts, typed fallbacks.</p>
+<p><strong>Observability:</strong> every call writes one <span class="mono">ai_operations</span> row — <span class="mono">feature, model, request_id, latency_ms, success, tokens, estimated_cost, error</span> — for TUTOR, CONVERSATION_SUMMARY, EMBEDDING, QUIZ_GENERATION, OPEN_ENDED_EVALUATION, CONCEPT_EXTRACTION, RECOMMENDATION, FLASHCARD_GENERATION, SUBCONCEPT_GENERATION (+ practice). Surfaced in <span class="mono">/admin/ai-usage</span> and project/global analytics — answering <em>why slow? which model? why poor retrieval? which workflow failed? what cost?</em></p>
+<p><strong>Evaluation:</strong> 18 curated fixtures (<span class="mono">tests/eval/fixtures.ts</span>) — Tutor (grounded / unsupported / multi-concept / citation / injection), Retrieval (query→expected source), Assessment (missing-concept detection), Recommendations (specificity rubric). <span class="mono">npm run eval</span> stamps <span class="mono">runId/suiteVersion</span>, archives per-run history, and <span class="mono">/admin/ai-evaluation</span> shows run-over-run <span class="badge">IMPROVED</span> <span class="badge amber">REGRESSED</span> <span class="badge slate">UNCHANGED</span> <span class="badge green">BASELINE</span>. Regression-aware by design: prompt/model/retrieval changes are diffed, not silently shipped.</p>
+
+<h2>12. Reliability, security &amp; performance</h2>
+<table class="grid">
+<tr><th>Risk</th><th>Handling (shipped)</th></tr>
+<tr><td>AI timeout / provider failure</td><td>90 s timeout; retry once w/ backoff; typed user-safe error; UI never stuck on Loading.</td></tr>
+<tr><td>Invalid AI output</td><td>Schema reject + log (<span class="mono">success=false</span>) + safe fallback; open-ended grading raises instead of persisting guesses.</td></tr>
+<tr><td>PDF / retrieval failure</td><td>FAILED + <span class="mono">processing_error</span> + Retry; empty retrieval = insufficient-evidence path, not an error.</td></tr>
+<tr><td>Auth / ownership</td><td>Routes: 401 unauthenticated, 404 not-owned (no leak); pages redirect to /login; writes scoped by <span class="mono">user_id</span>.</td></tr>
+<tr><td>Cost spikes</td><td>In-memory per-user fixed windows (tutor 20/min, quiz-gen 5/min, quiz-submit 60/min, flashcards 5/min, subconcepts 10/min) → 429 + Retry-After; embeddings cached 10 min; no re-embed of READY materials.</td></tr>
+<tr><td>Duplicates on retry</td><td>Hash dedupe, atomic claims, idempotent answers, generation guards — retries never duplicate state.</td></tr>
+</table>
+<p><strong>Performance (prototype-appropriate):</strong> pgvector top-K + threshold (no full scans in app code); balanced-per-material retrieval; paginated analytics/admin; async everything long-running; no unnecessary AI calls (summary best-effort, embeddings only for real work). Streaming Tutor and response caching are documented future work, not regressions.</p>
+
+<h2>13. Deployment &amp; configuration</h2>
+<div class="flow">
+<div class="step">Vercel (Next.js app, <span class="mono">/api/inngest</span> synced to Inngest Cloud) &nbsp;+&nbsp; Supabase (Postgres/pgvector, Auth, private <span class="mono">materials</span> bucket) &nbsp;+&nbsp; Inngest (jobs) &nbsp;+&nbsp; Mercury + Gemini (AI)</div>
+</div>
+<p>Setup: import repo → set env (see <span class="mono">.env.example</span>: <span class="mono">DATABASE_URL, NEXT_PUBLIC_SUPABASE_URL/ANON_KEY, SUPABASE_SERVICE_ROLE_KEY (server-only), MERCURY_API_KEY/BASE_URL/CHAT_MODEL, GEMINI_API_KEY/MODEL/DIM, INNGEST_EVENT/SIGNING_KEY (+DEV=1 local), ADMIN_EMAILS/ADMIN_USER_IDS</span>) → run migrations <span class="mono">001→014</span> → ensure bucket → sync Inngest → smoke-test the full loop live. Secrets are env-only, gitignored, never committed; service-role key never reaches the browser.</p>
+
+<h2>14. Testing · trade-offs · future</h2>
+<p><strong>Testing (meaningful, not exhaustive):</strong> 314 unit/integration tests across 26 files — mastery math, ownership/IDOR, tutor insufficient path + citation filtering + summary continuity, quiz gating, rate-limit windows, 401/404 mapping, admin health, eval run-tracking, Gemini formatting + mocked errors, migration ordering, scanned-PDF OCR, dedupe hashing. Plus 18 eval fixtures with live + offline scoring. <span class="mono">npm test · npm run eval · npm run build · npm run lint · npm run typecheck</span> all green.</p>
+<table class="grid">
+<tr><th>Trade-off (chosen)</th><th>Why</th><th>Production path</th></tr>
+<tr><td>Mastery = 0.7/0.3 average; growth = ±5</td><td>Explainable, testable in hours</td><td>Difficulty-weighted + forgetting curves + confidence bands</td></tr>
+<tr><td>Admin = allow-list, no RBAC</td><td>Zero-schema authz for prototype</td><td><span class="mono">profiles.is_admin</span> + policies + audit log</td></tr>
+<tr><td>Eval = curated fixtures + file history</td><td>Real signal without eval-platform build</td><td>LLM-as-judge + dataset versioning + CI gates</td></tr>
+<tr><td>Rate limit = single-instance memory</td><td>Cost guard in minutes</td><td>Shared store (Redis) for multi-instance</td></tr>
+<tr><td>No streaming / no cache</td><td>Correctness first on the clock</td><td>Token streaming + embedding/response cache</td></tr>
+</table>
+<p><strong>Known limitations (honest):</strong> token/cost columns exist but provider <span class="mono">usage</span> is not yet threaded through (calls/latency/errors visible, cost estimated); quiz-completed fallback leans on Inngest delivery (inline heal exists for materials); injection delimiters cover Tutor/practice/concepts, remaining prompts queued for the same treatment; uploads have file-level (not per-user quota) limits.</p>
+<p><strong>Future (schema already supports):</strong> Learning Path Engine (order <span class="mono">concepts+mastery</span>) · Mistake Intelligence (cluster <span class="mono">answers.evaluation</span>) · Concept Graph edges · Socratic Tutor mode · Spaced Repetition (<span class="mono">mastery_history.created_at</span>) · Evidence-aware UI (<span class="mono">mastery.evidence</span>) · cross-project AI Coach.</p>
+<div class="callout ok"><strong>Success criterion — met:</strong> a user completes Space → Project → Material → Knowledge → Tutor (+citation) → Unsupported handling → Adaptive Quiz → Assessment → Mastery → Growth → Analytics → Recommendation → Continue Learning without losing context, while an admin simultaneously inspects users, projects, activity, analytics, AI usage, evaluation and health. Live at the URL on the cover.</div>
+
+</body></html>
